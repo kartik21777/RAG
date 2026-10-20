@@ -8,7 +8,7 @@ import math
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
-from src.core.schemas import CRAGAction
+from src.core.schemas import CRAGAction, Document, RetrievalResult
 
 
 class EvaluatorPrediction(BaseModel):
@@ -103,4 +103,49 @@ class QueryDecision(BaseModel):
     empty_retrieval: bool = Field(
         default=False,
         description="True if zero candidate documents were provided to the router (distinguishes empty retrieval from all candidates rejected)",
+    )
+
+
+class RefinementResult(BaseModel):
+    """
+    Output emitted by an evidence refiner when attempting to complete VERIFY_MORE evidence.
+    Preserves complete multi-engine retrieval provenance (scores, ranks, metadata).
+    """
+
+    query_text: str = Field(..., min_length=1, description="Target query text")
+    original_doc_ids: List[str] = Field(
+        ...,
+        description="Doc IDs of candidates that triggered refinement",
+    )
+    refined_results: List[RetrievalResult] = Field(
+        ...,
+        description="Merged and deduplicated set of canonical RetrievalResult contracts with full provenance",
+    )
+    refined_documents: List[Document] = Field(
+        ...,
+        description="Merged and deduplicated set of refined evidence documents",
+    )
+    refinement_strategy: str = Field(
+        ...,
+        description="Strategy employed: 'adjacent_chunk' | 'secondary_retrieval' | 'recovery_retrieval' | 'skipped_no_targets' | 'mock'",
+    )
+    is_expanded: bool = Field(
+        ...,
+        description="True if new unique evidence documents or content were added",
+    )
+    skipped: bool = Field(
+        default=False,
+        description="True if refinement was skipped because no verification targets required refinement",
+    )
+    added_doc_ids: List[str] = Field(
+        default_factory=list,
+        description="IDs of newly introduced documents",
+    )
+    added_results: List[RetrievalResult] = Field(
+        default_factory=list,
+        description="Newly introduced RetrievalResult instances with their retrieval provenance",
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Audit and diagnostic metadata",
     )
