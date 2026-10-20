@@ -1,12 +1,12 @@
 """
-Abstract base interface for sparse retrieval backends.
-Ensures uniform contract across all sparse engines (BM25s, Pyserini)
-and isolates consumers like HybridRetriever from internal index representations.
+Abstract base interfaces for sparse and dense retrieval backends.
+Ensures uniform contracts across all retrieval engines (BM25, Sentence Transformers / FAISS)
+and isolates downstream consumers (HybridRetriever, Evaluator) from internal representations.
 """
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Union
+from typing import Any, List, Union
 from src.core.schemas import Document, RetrievalCandidate
 
 
@@ -81,5 +81,93 @@ class BaseSparseRetriever(ABC):
         Raises:
             FileNotFoundError: If the directory or required artifacts are missing.
             ValueError: If index files or metadata are corrupted or incompatible.
+        """
+        pass
+
+
+class BaseDenseRetriever(ABC):
+    """
+    Abstract contract for dense semantic retrievers in the CRAG project.
+
+    Subclasses must implement:
+    - index: encode documents and construct the dense vector index.
+    - search: encode query string and retrieve nearest neighbors as RetrievalCandidate objects.
+    - save: persist vector index, embeddings metadata, and document records to disk.
+    - load: restore a complete, queryable dense retriever instance from disk.
+    - encode: transform texts into dense embedding vectors.
+    """
+
+    @abstractmethod
+    def index(self, documents: List[Document]) -> None:
+        """
+        Encodes Document texts and builds the dense vector index.
+
+        Args:
+            documents: Non-empty list of Document instances with unique, stable doc_ids.
+
+        Raises:
+            ValueError: If documents is empty or contains duplicate doc_ids.
+        """
+        pass
+
+    @abstractmethod
+    def search(self, query: str, top_k: int = 5) -> List[RetrievalCandidate]:
+        """
+        Executes dense semantic retrieval for a given query string.
+
+        Args:
+            query: Non-empty, non-whitespace query string.
+            top_k: Positive integer specifying the maximum number of candidates to retrieve.
+
+        Returns:
+            List of RetrievalCandidate objects sorted in descending order of similarity score.
+
+        Raises:
+            ValueError: If query is empty/whitespace or top_k is non-positive.
+            RuntimeError: If called before an index has been built or loaded.
+        """
+        pass
+
+    @abstractmethod
+    def save(self, save_dir: Union[str, Path]) -> None:
+        """
+        Persists vector index artifacts, model metadata, and document records to disk.
+
+        Args:
+            save_dir: Directory path where index artifacts will be saved.
+
+        Raises:
+            RuntimeError: If attempting to save before indexing has occurred.
+        """
+        pass
+
+    @classmethod
+    @abstractmethod
+    def load(cls, save_dir: Union[str, Path]) -> "BaseDenseRetriever":
+        """
+        Restores a persisted dense retriever instance from disk artifacts.
+
+        Args:
+            save_dir: Path to directory containing persisted index artifacts.
+
+        Returns:
+            A ready-to-search BaseDenseRetriever instance.
+
+        Raises:
+            FileNotFoundError: If the directory or required artifacts are missing.
+            ValueError: If index files or metadata are corrupted or incompatible.
+        """
+        pass
+
+    @abstractmethod
+    def encode(self, texts: List[str]) -> Any:
+        """
+        Encodes a list of text strings into dense embedding vectors.
+
+        Args:
+            texts: List of strings to encode.
+
+        Returns:
+            Numpy array of shape (len(texts), embedding_dim) containing dense embeddings.
         """
         pass

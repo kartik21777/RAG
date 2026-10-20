@@ -192,16 +192,81 @@ Where:
 
 ---
 
-## 6. Running Tests
+## 6. Dense Semantic Retrieval (Sentence Transformers & FAISS IndexFlatIP)
 
-The test suite separates fast unit tests from model-loading integration tests:
+The dense retrieval module (`src/retrieval/dense.py`) implements `BaseDenseRetriever` using `sentence-transformers` and `faiss-cpu`:
+
+### Mathematical Formulation: Cosine Similarity via Inner Product
+
+1. **Transformer Encodings**: Texts (queries and passages) are encoded into $D$-dimensional real-valued dense representations using `all-MiniLM-L6-v2` ($D = 384$).
+2. **Unit-Hypersphere L2 Normalization**:
+   Each vector $v \in \mathbb{R}^D$ is projected onto the unit sphere:
+   $$\hat{v} = \frac{v}{\|v\|_2} = \frac{v}{\sqrt{\sum_{i=1}^D v_i^2}}, \quad \text{such that } \|\hat{v}\|_2 = 1.0$$
+3. **Exact Inner Product Equivalence**:
+   By geometric definition, the inner product between two unit-normalized vectors equals their cosine similarity:
+   $$\langle \hat{u}, \hat{v} \rangle = \sum_{i=1}^D \hat{u}_i \hat{v}_i = \|\hat{u}\|_2 \|\hat{v}\|_2 \cos(\theta) = \cos(\theta) \in [-1.0, 1.0]$$
+4. **FAISS IndexFlatIP**:
+   Using `faiss.IndexFlatIP` performs exhaustive brute-force exact Maximum Inner Product Search (MIPS) across all indexed vectors with zero quantization distortion. This guarantees exact vector nearest neighbors relative to the embedding representations. However, end-to-end retrieval relevance and information-theoretic metrics like Recall@K depend fundamentally on the corpus coverage, embedding model quality, and task-specific relevance judgments.
+
+### Quickstart Example
+```python
+from src.core.dataset import load_corpus_from_jsonl
+from src.retrieval.dense import DenseRetriever
+
+# 1. Load corpus
+corpus = load_corpus_from_jsonl("data/fixtures/corpus.jsonl")
+
+# 2. Instantiate and index (default model: all-MiniLM-L6-v2)
+retriever = DenseRetriever()
+retriever.index(corpus)
+
+# 3. Search (returns top_k candidates with cosine similarity scores in [-1.0, 1.0])
+results = retriever.search("neural vector search and cosine similarity", top_k=3)
+for candidate in results:
+    print(f"Rank {candidate.rank}: {candidate.document.doc_id} (Cosine Sim: {candidate.score:.4f})")
+
+# 4. Save and load index
+retriever.save("indexes/faiss")
+loaded_retriever = DenseRetriever.load("indexes/faiss")
+```
+
+### Persistence Artifacts (`indexes/faiss/`)
+- `faiss.index`: Serialized native binary FAISS index (written via `faiss.write_index`).
+- `retriever_metadata.json`: Model architecture, embedding dimension, normalization flags, ordered document IDs, and full `Document` models for instant reconstruction.
+
+---
+
+## 7. Comparative Retrieval Analysis: Sparse (BM25) vs Dense (FAISS)
+
+Empirical evaluation of the 6 fixture queries across the controlled 10-document corpus highlights the complementary nature of sparse and dense retrieval:
+
+| Query ID | Informational Intent / Focus | Expected Target | BM25 Top 1 (Score) | Dense Top 1 (Cosine Sim) | Analysis & Observations |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| **`q_001`** | Exact formula for Reciprocal Rank Fusion | `doc_001` | **`doc_001`** (3.3278) | **`doc_001`** (0.7029) | Both retrievers succeed. BM25 leverages exact token overlap (`formula`, `RRF`), while Dense captures semantic relevance. |
+| **`q_002`** | Combining sparse & dense rankings via RRF | `doc_001`, `doc_002` | **`doc_002`** (4.3566) | **`doc_002`** (0.7632) | Both retrievers place the two expected target documents in Rank 1 (`doc_002`) and Rank 2 (`doc_001`). |
+| **`q_003`** | BM25 hyperparameter $b$ length normalization | `doc_003` | **`doc_003`** (3.6160) | **`doc_003`** (0.6205) | Strong agreement. BM25 directly scores $b$ parameter terms; dense captures parameter role semantics. |
+| **`q_004`** | CRAG action when evidence is incomplete | `doc_006` | **`doc_006`** (4.3962) | **`doc_006`** (0.6098) | Both retrievers isolate `doc_006` (CRAG policy specification) as Rank 1. |
+| **`q_005`** | Shor's quantum algorithm breaking RSA *(Unanswerable)* | `[]` | `doc_009` (0.6334) | `doc_010` (0.2239) | **Critical CRAG Insight**: Neither retriever returns zero candidates natively; Dense forces nearest neighbors even for out-of-domain queries. The lower similarity observed here (~0.22 vs ~0.60–0.76 for relevant queries) is a preliminary empirical observation on this small fixture set, **not a universal rejection threshold**. Rather than relying on rigid score heuristics, CRAG relies on Member 2's trained DeBERTa Evaluator to detect out-of-domain context and reliably trigger `REJECT_SEARCH`. |
+| **`q_006`** | CRAG query rewriting mechanism *(Hard Negative)* | `doc_006` | **`doc_006`** (4.4521) | **`doc_006`** (0.6517) | Both retrievers rank `doc_006` at 1 and `doc_007` (web query rewriting) at 2. The document mentions rewriting but lacks mechanism details, motivating Member 2's sufficiency evaluation. |
+
+---
+
+## 8. Running Tests
+
+The test suite covers environment sanity, data contracts, dataset serialization, sparse BM25 retrieval, and dense FAISS retrieval:
 
 ```bash
-# Run all fast offline unit tests
+# Run the complete test suite (56 tests)
+pytest
+
+# Run fast unit tests
 pytest -m unit
 
-# Run environment verification test
-pytest tests/test_environment.py
+# Run sparse retrieval tests only
+pytest tests/test_sparse.py
+
+# Run dense retrieval tests only
+pytest tests/test_dense.py
 
 # Run with test coverage
 pytest --cov=src tests/
@@ -209,13 +274,13 @@ pytest --cov=src tests/
 
 ---
 
-## 7. Project Layout
+## 9. Project Layout
 
 ```text
 c:\RAG\
 ├── .gitignore                    <- Ignored venv, env secrets, caches, and indexes
 ├── .env.example                  <- Safe configuration template
-├── README.md                     <- This setup and architecture guide
+├── README.md                     <- Setup, architecture, and mathematical formulation guide
 ├── pyproject.toml                <- Project metadata & pytest configuration
 ├── requirements.txt              <- Production dependencies
 ├── requirements-dev.txt          <- Development & testing dependencies
@@ -223,24 +288,28 @@ c:\RAG\
 │   ├── raw/                      <- Source raw texts
 │   ├── processed/                <- Ingested corpus files
 │   ├── fixtures/                 <- Small controlled evaluation fixtures
+│   │   ├── corpus.jsonl          <- 10 curated test documents
+│   │   ├── queries.jsonl         <- 6 test queries with expected doc IDs and CRAG actions
+│   │   └── evaluator_labels.jsonl<- Ground-truth evaluator pairs with rationales
 │   └── synthetic/                <- Generated (Query, Doc, Label) datasets
 ├── indexes/
 │   ├── bm25/                     <- Saved BM25 index artifacts
 │   └── faiss/                    <- Saved FAISS vector index & ID mappings
 ├── src/
 │   ├── core/                     <- Shared data contracts (Document, Labels, Dataset I/O)
-│   ├── retrieval/                <- BaseSparseRetriever, BM25Retriever, and future dense/RRF
+│   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BM25Retriever, DenseRetriever
 │   └── synthetic_data/           <- Negative generator, LLM judge, and validator
 └── tests/
     ├── test_environment.py       <- Environment and dependency import tests
     ├── test_schemas.py           <- Schema validation & label rule tests
     ├── test_dataset_io.py        <- Dataset I/O & fixture integrity tests
-    └── test_sparse.py            <- BM25 sparse retrieval tests
+    ├── test_sparse.py            <- BM25 sparse retrieval tests
+    └── test_dense.py             <- Dense semantic retrieval & FAISS tests
 ```
 
 ---
 
-## 8. Collaboration Guidelines (Members 1, 2, and 3)
+## 10. Collaboration Guidelines (Members 1, 2, and 3)
 
 1. **Branching Strategy**:
    - `main`: Protected, production-ready releases only.
