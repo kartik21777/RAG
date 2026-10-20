@@ -149,3 +149,27 @@ class RefinementResult(BaseModel):
         default_factory=dict,
         description="Audit and diagnostic metadata",
     )
+
+
+class RewriteResult(BaseModel):
+    """
+    Output emitted by a query rewriter when attempting to reformulate a rejected query.
+    Preserves original query, rewritten query, transformation strategy, attempt counter,
+    and terminal budget/cycle termination flag.
+    """
+
+    original_query: str = Field(..., min_length=1, description="Original input query")
+    rewritten_query: str = Field(..., min_length=1, description="Rewritten query to be executed")
+    strategy: str = Field(
+        ...,
+        description="Rewriting strategy applied (e.g. 'mock', 'keyword_simplification', 'synonym_expansion', 'terminal_budget_exhausted', 'terminal_cycle_avoided')",
+    )
+    attempt_index: int = Field(..., ge=1, description="1-indexed rewriting attempt counter")
+    is_terminal: bool = Field(
+        default=False,
+        description="True if no further rewrite attempts are possible (budget exhausted or cycle detected)",
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Audit and diagnostic metadata",
+    )

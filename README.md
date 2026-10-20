@@ -458,6 +458,8 @@ pytest tests/test_retrieval_facade.py
 pytest tests/test_synthetic_data.py
 pytest tests/test_orchestration_evaluator.py
 pytest tests/test_orchestration_router.py
+pytest tests/test_orchestration_refiner.py
+pytest tests/test_orchestration_rewriter.py
 
 # Run with test coverage
 pytest --cov=src tests/
@@ -497,10 +499,12 @@ c:\RAG\
 │   └── generate_evaluator_datasets.py <- Generates development train/val datasets
 ├── src/
 │   ├── core/                     <- Shared data contracts (Document, Labels, Dataset I/O)
-│   ├── orchestration/            <- Runtime evaluation & corrective routing (Option C)
-│   │   ├── schemas.py            <- EvaluatorPrediction, CandidateDecision, QueryDecision
+│   ├── orchestration/            <- Runtime evaluation, routing, refinement & rewriting (Option C)
+│   │   ├── schemas.py            <- EvaluatorPrediction, CandidateDecision, QueryDecision, RefinementResult, RewriteResult
 │   │   ├── evaluator.py          <- BaseRuntimeEvaluator & MockRuntimeEvaluator
-│   │   └── router.py             <- CorrectiveDecisionRouter with intent dominance & aggregation
+│   │   ├── router.py             <- CorrectiveDecisionRouter with intent dominance & aggregation
+│   │   ├── refiner.py            <- BaseEvidenceRefiner, MockEvidenceRefiner, SecondaryRetrievalRefiner
+│   │   └── rewriter.py           <- BaseQueryRewriter, MockQueryRewriter, RuleBasedQueryRewriter
 │   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BaseHybridRetriever,
 │   │                                BM25Retriever, DenseRetriever, HybridRetriever, CRAGRetrieverFacade
 │   └── synthetic_data/           <- Base contracts, Mock/LLM generators, LLMEvaluatorJudge,
@@ -515,7 +519,9 @@ c:\RAG\
     ├── test_retrieval_facade.py  <- Unified CRAG retrieval facade tests
     ├── test_synthetic_data.py    <- Synthetic generator, judge, sampler, validator & pipeline tests
     ├── test_orchestration_evaluator.py <- Runtime evaluator contract & mock tests (11 tests)
-    └── test_orchestration_router.py    <- Corrective router & query aggregation tests (16 tests)
+    ├── test_orchestration_router.py    <- Corrective router & query aggregation tests (16 tests)
+    ├── test_orchestration_refiner.py   <- Evidence refiner contract & secondary retrieval tests (15 tests)
+    └── test_orchestration_rewriter.py  <- Query rewriter, cycle prevention & budget tests (18 tests)
 ```
 
 ---

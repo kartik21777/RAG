@@ -7,12 +7,14 @@ query rewriting, and grounded generation for Semantic- and Evidence-Aware CRAG.
 
 from src.orchestration.evaluator import BaseRuntimeEvaluator, MockRuntimeEvaluator
 from src.orchestration.refiner import BaseEvidenceRefiner, MockEvidenceRefiner, SecondaryRetrievalRefiner
+from src.orchestration.rewriter import BaseQueryRewriter, MockQueryRewriter, RuleBasedQueryRewriter
 from src.orchestration.router import CorrectiveDecisionRouter
 from src.orchestration.schemas import (
     CandidateDecision,
     EvaluatorPrediction,
     QueryDecision,
     RefinementResult,
+    RewriteResult,
 )
 
 __all__ = [
@@ -26,4 +28,8 @@ __all__ = [
     "BaseEvidenceRefiner",
     "MockEvidenceRefiner",
     "SecondaryRetrievalRefiner",
+    "RewriteResult",
+    "BaseQueryRewriter",
+    "MockQueryRewriter",
+    "RuleBasedQueryRewriter",
 ]
