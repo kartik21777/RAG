@@ -1,11 +1,14 @@
 """
 Orchestration schemas for the CRAG pipeline.
-Defines runtime evaluator predictions and related data structures.
+Defines runtime evaluator predictions, candidate-level routing decisions,
+and query-level aggregation structures.
 """
 
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
+
+from src.core.schemas import CRAGAction
 
 
 class EvaluatorPrediction(BaseModel):
@@ -54,3 +57,50 @@ class EvaluatorPrediction(BaseModel):
         if v < 0.0 or v > 1.0:
             raise ValueError(f"Score must be within [0.0, 1.0], got {v}")
         return float(v)
+
+
+class CandidateDecision(BaseModel):
+    """
+    Discrete routing decision for an individual candidate evidence document.
+
+    SEMANTIC CLARIFICATION:
+    - intent_fit_label: Independently thresholded intent label (1 if intent_fit_score >= tau_intent else 0).
+    - evidence_sufficiency_label: Independently thresholded sufficiency label (1 if evidence_sufficiency_score >= tau_suff else 0).
+      Preserves the evaluator's raw prediction without silently zeroing it when intent fails.
+    - action: Corrective action enforced by policy. If intent_fit_label == 0, action is ALWAYS REJECT_SEARCH
+      under the Intent Dominance Rule, and is_contradictory_override is flagged True.
+    """
+
+    prediction: EvaluatorPrediction
+    action: CRAGAction = Field(..., description="Chosen CRAG corrective policy action for this document")
+    intent_fit_label: int = Field(..., ge=0, le=1, description="Independently thresholded intent-fit label (0 or 1)")
+    evidence_sufficiency_label: int = Field(
+        ...,
+        ge=0,
+        le=1,
+        description="Independently thresholded evidence-sufficiency label (0 or 1)",
+    )
+    rationale: Optional[str] = Field(None, description="Explanation of the routing decision")
+    is_contradictory_override: bool = Field(
+        default=False,
+        description="True if raw sufficiency met threshold while intent was below threshold, triggering intent dominance override to REJECT_SEARCH in action",
+    )
+
+
+class QueryDecision(BaseModel):
+    """
+    Aggregated routing decision across all evaluated candidates for a given query.
+    Enforces independent evaluation: one poor candidate does NOT invalidate independent trusted evidence.
+    """
+
+    query_text: str = Field(..., min_length=1, description="User query text")
+    overall_action: CRAGAction = Field(..., description="Query-level corrective action (TRUST, VERIFY_MORE, REJECT_SEARCH)")
+    candidate_decisions: List[CandidateDecision] = Field(default_factory=list, description="Per-candidate decisions")
+    trusted_doc_ids: List[str] = Field(default_factory=list, description="Doc IDs admitted into trusted evidence pool")
+    verify_doc_ids: List[str] = Field(default_factory=list, description="Doc IDs requiring evidence refinement")
+    rejected_doc_ids: List[str] = Field(default_factory=list, description="Doc IDs rejected as unhelpful or off-topic")
+    rationale: str = Field(..., description="Justification for the overall query routing decision")
+    empty_retrieval: bool = Field(
+        default=False,
+        description="True if zero candidate documents were provided to the router (distinguishes empty retrieval from all candidates rejected)",
+    )

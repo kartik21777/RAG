@@ -6,10 +6,14 @@ query rewriting, and grounded generation for Semantic- and Evidence-Aware CRAG.
 """
 
 from src.orchestration.evaluator import BaseRuntimeEvaluator, MockRuntimeEvaluator
-from src.orchestration.schemas import EvaluatorPrediction
+from src.orchestration.router import CorrectiveDecisionRouter
+from src.orchestration.schemas import CandidateDecision, EvaluatorPrediction, QueryDecision
 
 __all__ = [
     "BaseRuntimeEvaluator",
     "MockRuntimeEvaluator",
     "EvaluatorPrediction",
+    "CandidateDecision",
+    "QueryDecision",
+    "CorrectiveDecisionRouter",
 ]
