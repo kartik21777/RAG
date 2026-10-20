@@ -437,6 +437,28 @@ The orchestration layer (`src/orchestration/`) coordinates runtime evaluator mod
   - **Query Identity Validation**: Rejects candidate decisions whose query text does not match the target aggregation query.
   - **Empty Retrieval Distinction**: Programmatically flags `empty_retrieval: bool` and prefixes rationales with `"EMPTY_RETRIEVAL:"` vs `"ALL_CANDIDATES_REJECTED:"`.
 
+### 10.3 Evidence Refiner Contract (`SecondaryRetrievalRefiner`)
+- **`BaseEvidenceRefiner`**: Abstract interface for refining, expanding, or supplementary-fetching evidence via `refine(query, candidates, initial_action) -> RefinementResult`.
+- **`SecondaryRetrievalRefiner`**: Handles `VERIFY_MORE` actions by invoking the retrieval facade with the original query unchanged (no premature query mutations or keyword stuffing).
+  - **Bounded Over-Fetch & Depth**: Fetches secondary candidates using configured depth and bounded over-fetch parameters (`over_fetch_factor = 2.0`).
+  - **Deduplication & Provenance**: Merges secondary results with primary candidates while deduplicating by `doc_id` and tagging provenance in candidate metadata (`origin: "primary"` vs `"secondary"`).
+  - **Adjacent-Chunk Expansion**: Supports structured adjacent chunk lookup when chunk ID metadata adheres to standard convention (`doc_001_c01`, `c02`...).
+  - **Empty Secondary Recovery**: Gracefully handles empty secondary search results by falling back to primary verified evidence.
+
+### 10.4 Query Rewriter Contract (`BaseQueryRewriter`)
+- **`BaseQueryRewriter`**: Abstract interface for query reformulation via `rewrite(query, history, rejected_candidates, original_query) -> RewriteResult`.
+- **Contract Option 2 (Rewrite-Only History)**:
+  - `history` strictly contains previously generated rewritten queries, never the root original query merely because it initiated the session.
+  - Attempt index is computed deterministically: $\text{attempt\_index} = \text{len}(\text{valid\_history}) + 1$.
+  - Session budget is enforced via `max_attempts`. Exceeding budget yields `strategy="terminal_budget_exhausted"` and `is_terminal=True`.
+- **3-Way Cycle Prevention & Root Query Protection**:
+  - Rejection of candidate equal to current `query` (no-op rewrite).
+  - Rejection of candidate matching any prior rewritten query in `history`.
+  - Rejection of candidate that reintroduces `original_query` (root user query) during multi-hop chained rewrites.
+- **Implementations**:
+  - `MockQueryRewriter`: Configurable deterministic test double supporting predefined mappings, sequential progressions, and cycle detection.
+  - `RuleBasedQueryRewriter`: 3-stage heuristic rewriter (stage 1: question/filler stripping, stage 2: acronym & domain synonym expansion, stage 3: technical disambiguation context).
+
 ---
 
 ## 11. Running Tests
@@ -444,7 +466,7 @@ The orchestration layer (`src/orchestration/`) coordinates runtime evaluator mod
 The automated test suite verifies all layers of the retrieval pipeline, facade, synthetic data generation, runtime evaluation, and decision routing:
 
 ```bash
-# Run the complete test suite (125 passing tests)
+# Run the complete test suite (158 passing tests)
 pytest
 
 # Run fast unit tests

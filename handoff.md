@@ -173,6 +173,12 @@ C:\RAG\
 ├── src/
 │   ├── core/schemas.py                   <- Canonical Pydantic schemas (Document, Query, EvaluatorExample, RetrievalResult)
 │   ├── core/dataset.py                   <- JSONL I/O dataset loaders
+│   ├── orchestration/                    <- Option C runtime evaluation, routing, refinement & rewriting
+│   │   ├── schemas.py                    <- EvaluatorPrediction, CandidateDecision, QueryDecision, RefinementResult, RewriteResult
+│   │   ├── evaluator.py                  <- BaseRuntimeEvaluator & MockRuntimeEvaluator
+│   │   ├── router.py                     <- CorrectiveDecisionRouter (intent dominance & query aggregation)
+│   │   ├── refiner.py                    <- BaseEvidenceRefiner & SecondaryRetrievalRefiner
+│   │   └── rewriter.py                   <- BaseQueryRewriter, MockQueryRewriter & RuleBasedQueryRewriter
 │   ├── retrieval/
 │   │   ├── facade.py                     <- CRAGRetrieverFacade & create_crag_retriever()
 │   │   ├── hybrid.py                     <- HybridRetriever (Reciprocal Rank Fusion)
@@ -182,5 +188,5 @@ C:\RAG\
 │       ├── judge.py                      <- LLMEvaluatorJudge & MockEvaluatorJudge
 │       ├── pipeline.py                   <- SyntheticDataPipeline
 │       └── validator.py                  <- Quality gate validator
-└── tests/                                <- 98 passing unit & integration tests
+└── tests/                                <- 158 passing unit & integration tests
 ```
