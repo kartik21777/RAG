@@ -140,6 +140,21 @@ cp .env.example .env
 ```
 Edit `.env` to configure paths and parameters. Placeholder values are safe for local development and offline testing.
 
+#### 5. Build Indexes & Generate Development Datasets (Fresh Clone Reproduction)
+
+The 50-document curated corpus is tracked in Git at `data/processed/corpus.jsonl`. Teammates can immediately build local indexes and development datasets:
+
+```powershell
+# 1. Build local hybrid sparse-dense indexes
+python scripts/build_indexes.py --corpus-path data/processed/corpus.jsonl --output-dir indexes/hybrid
+
+# 2. Generate development training and validation datasets for Member 2
+python scripts/generate_evaluator_datasets.py --corpus-path data/processed/corpus.jsonl --output-dir data/synthetic
+```
+
+> [!NOTE]
+> **Dataset Status & Caveat**: Datasets generated via `scripts/generate_evaluator_datasets.py` (or `--judge mock/none`) are **development and bootstrap datasets** designed for schema validation, data-loader debugging, and multi-task loss-function training. They are **not certified ground-truth evaluator labels**. Production-grade evaluation requires live LLM judging with configured provider adapters or human annotations.
+
 ---
 
 ## 5. BM25 Sparse Retrieval Usage & Configuration
@@ -403,10 +418,10 @@ python -m src.synthetic_data.generate \
 
 ## 10. Running Tests
 
-The automated test suite verifies all layers of the retrieval pipeline and synthetic data generation:
+The automated test suite verifies all layers of the retrieval pipeline, facade, and synthetic data generation:
 
 ```bash
-# Run the complete test suite (94 passing tests)
+# Run the complete test suite (98 passing tests)
 pytest
 
 # Run fast unit tests
@@ -416,6 +431,7 @@ pytest -m unit
 pytest tests/test_sparse.py
 pytest tests/test_dense.py
 pytest tests/test_hybrid.py
+pytest tests/test_retrieval_facade.py
 pytest tests/test_synthetic_data.py
 
 # Run with test coverage
@@ -431,25 +447,33 @@ c:\RAG\
 ├── .gitignore                    <- Ignored venv, env secrets, caches, and indexes
 ├── .env.example                  <- Safe configuration template
 ├── README.md                     <- Setup, architecture, and mathematical formulation guide
+├── handoff.md                    <- Teammate handoff documentation for Members 2 & 3
 ├── pyproject.toml                <- Project metadata & pytest configuration
 ├── requirements.txt              <- Production dependencies
 ├── requirements-dev.txt          <- Development & testing dependencies
 ├── data/
 │   ├── raw/                      <- Source raw texts
-│   ├── processed/                <- Ingested corpus files
+│   ├── processed/                <- 50-document curated domain corpus
+│   │   └── corpus.jsonl
 │   ├── fixtures/                 <- Small controlled evaluation fixtures
 │   │   ├── corpus.jsonl          <- 10 curated test documents
 │   │   ├── queries.jsonl         <- 6 test queries with expected doc IDs and CRAG actions
 │   │   └── evaluator_labels.jsonl<- Ground-truth evaluator pairs with rationales
 │   └── synthetic/                <- Generated (Query, Doc, Label) datasets (ignored in git)
+│       ├── evaluator_train.jsonl <- 160 validated training examples for Member 2
+│       └── evaluator_val.jsonl   <- 40 validated validation examples for Member 2
 ├── indexes/
 │   ├── bm25/                     <- Saved BM25 index artifacts
 │   ├── faiss/                    <- Saved FAISS vector index & ID mappings
 │   └── hybrid/                   <- Nested sparse and dense indexes with RRF metadata
+├── scripts/
+│   ├── prepare_corpus.py         <- Generates/recreates 50-document technical corpus
+│   ├── build_indexes.py          <- Builds local hybrid sparse-dense indexes
+│   └── generate_evaluator_datasets.py <- Generates development train/val datasets
 ├── src/
 │   ├── core/                     <- Shared data contracts (Document, Labels, Dataset I/O)
 │   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BaseHybridRetriever,
-│   │                                BM25Retriever, DenseRetriever, HybridRetriever
+│   │                                BM25Retriever, DenseRetriever, HybridRetriever, CRAGRetrieverFacade
 │   └── synthetic_data/           <- Base contracts, Mock/LLM generators, LLMEvaluatorJudge,
 │                                    MockEvaluatorJudge, NegativeSampler, Pipeline, Validator, CLI
 └── tests/
@@ -459,6 +483,7 @@ c:\RAG\
     ├── test_sparse.py            <- BM25 sparse retrieval tests
     ├── test_dense.py             <- Dense semantic retrieval & FAISS tests
     ├── test_hybrid.py            <- Reciprocal Rank Fusion hybrid retrieval tests
+    ├── test_retrieval_facade.py  <- Unified CRAG retrieval facade tests
     └── test_synthetic_data.py    <- Synthetic generator, judge, sampler, validator & pipeline tests
 ```
 

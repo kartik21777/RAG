@@ -5,6 +5,7 @@ Includes sparse (BM25), dense (Sentence Transformers + FAISS), and hybrid retrie
 
 from src.retrieval.base import BaseDenseRetriever, BaseHybridRetriever, BaseSparseRetriever
 from src.retrieval.dense import DenseRetriever
+from src.retrieval.facade import CRAGRetrieverFacade, create_crag_retriever
 from src.retrieval.hybrid import HybridRetriever
 from src.retrieval.sparse import BM25Retriever
 
@@ -15,4 +16,6 @@ __all__ = [
     "BM25Retriever",
     "DenseRetriever",
     "HybridRetriever",
+    "CRAGRetrieverFacade",
+    "create_crag_retriever",
 ]

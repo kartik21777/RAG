@@ -35,10 +35,13 @@ indexes/bm25/*
 !indexes/bm25/.gitkeep
 indexes/faiss/*
 !indexes/faiss/.gitkeep
+indexes/hybrid/*
+!indexes/hybrid/.gitkeep
 data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+!data/processed/corpus.jsonl
 data/synthetic/*
 !data/synthetic/.gitkeep
 !data/fixtures/
