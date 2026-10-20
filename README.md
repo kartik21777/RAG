@@ -236,37 +236,93 @@ loaded_retriever = DenseRetriever.load("indexes/faiss")
 
 ---
 
-## 7. Comparative Retrieval Analysis: Sparse (BM25) vs Dense (FAISS)
+## 7. Hybrid Retrieval with Reciprocal Rank Fusion (RRF)
 
-Empirical evaluation of the 6 fixture queries across the controlled 10-document corpus highlights the complementary nature of sparse and dense retrieval:
+The hybrid retrieval module (`src/retrieval/hybrid.py`) implements `BaseHybridRetriever` by fusing ranked candidates from `BM25Retriever` and `DenseRetriever` using **Reciprocal Rank Fusion (RRF)** (Cormack et al., SIGIR 2009).
 
-| Query ID | Informational Intent / Focus | Expected Target | BM25 Top 1 (Score) | Dense Top 1 (Cosine Sim) | Analysis & Observations |
-| :--- | :--- | :---: | :---: | :---: | :--- |
-| **`q_001`** | Exact formula for Reciprocal Rank Fusion | `doc_001` | **`doc_001`** (3.3278) | **`doc_001`** (0.7029) | Both retrievers succeed. BM25 leverages exact token overlap (`formula`, `RRF`), while Dense captures semantic relevance. |
-| **`q_002`** | Combining sparse & dense rankings via RRF | `doc_001`, `doc_002` | **`doc_002`** (4.3566) | **`doc_002`** (0.7632) | Both retrievers place the two expected target documents in Rank 1 (`doc_002`) and Rank 2 (`doc_001`). |
-| **`q_003`** | BM25 hyperparameter $b$ length normalization | `doc_003` | **`doc_003`** (3.6160) | **`doc_003`** (0.6205) | Strong agreement. BM25 directly scores $b$ parameter terms; dense captures parameter role semantics. |
-| **`q_004`** | CRAG action when evidence is incomplete | `doc_006` | **`doc_006`** (4.3962) | **`doc_006`** (0.6098) | Both retrievers isolate `doc_006` (CRAG policy specification) as Rank 1. |
-| **`q_005`** | Shor's quantum algorithm breaking RSA *(Unanswerable)* | `[]` | `doc_009` (0.6334) | `doc_010` (0.2239) | **Critical CRAG Insight**: Neither retriever returns zero candidates natively; Dense forces nearest neighbors even for out-of-domain queries. The lower similarity observed here (~0.22 vs ~0.60–0.76 for relevant queries) is a preliminary empirical observation on this small fixture set, **not a universal rejection threshold**. Rather than relying on rigid score heuristics, CRAG relies on Member 2's trained DeBERTa Evaluator to detect out-of-domain context and reliably trigger `REJECT_SEARCH`. |
-| **`q_006`** | CRAG query rewriting mechanism *(Hard Negative)* | `doc_006` | **`doc_006`** (4.4521) | **`doc_006`** (0.6517) | Both retrievers rank `doc_006` at 1 and `doc_007` (web query rewriting) at 2. The document mentions rewriting but lacks mechanism details, motivating Member 2's sufficiency evaluation. |
+### Why Rank Fusion Over Raw Score Normalization?
+
+Combining sparse and dense retrievers by directly adding or weighting raw scores fails due to fundamental incompatibilities:
+1. **Unbounded vs. Bounded Ranges**: BM25 scores are unbounded $[0, \infty)$ (dependent on document length and corpus-wide IDF), whereas unit-normalized dense cosine similarities are strictly bounded in $[-1.0, 1.0]$.
+2. **Min-Max Distortion**: Linear min-max scaling $\frac{s - s_{\min}}{s_{\max} - s_{\min}}$ is acutely sensitive to outlier scores and produces query-dependent scale shifts.
+3. **Incomparable Score Distributions**: Standard statistical normalizations (such as Z-score standardization $\frac{s - \mu}{\sigma}$) align first and second moments, but score normalization alone does not guarantee semantic comparability between BM25 lexical match scores and dense cosine similarities. Because lexical and dense models exhibit fundamentally different score dynamics across diverse queries, linear score combinations remain unstable without extensive per-corpus calibration.
+
+RRF resolves this by relying purely on the **ordinal ranking position** of candidates within each retriever:
+
+$$\text{RRF\_Score}(d) = \sum_{m \in M} \frac{w_m}{k + \text{rank}_m(d)}$$
+
+Where:
+- $M = \{\text{sparse}, \text{dense}\}$ is the set of retrievers.
+- $\text{rank}_m(d) \in \{1, 2, \dots\}$ is the 1-indexed rank position of document $d$ in retriever $m$.
+- $k$ is the smoothing constant (default: $k=60$).
+  - For $k=60$, Rank 1 adds $\frac{1}{61} \approx 0.01639$, while Rank 2 adds $\frac{1}{62} \approx 0.01613$.
+  - The constant $k$ dampens extreme penalties for lower ranks and prevents a high-ranking outlier from a single engine from completely dominating consensus documents surfaced by both engines.
+- $w_m$ is an optional component weight (default: $w_{sparse} = 1.0, w_{dense} = 1.0$).
+
+### Consensus Boosting
+When a document is retrieved by **both** sparse and dense engines, its score accumulates additively:
+$$\text{RRF}(d) = \frac{1}{k + \text{rank}_{sparse}(d)} + \frac{1}{k + \text{rank}_{dense}(d)}$$
+For example, a document ranked at position 2 in both engines ($0.01613 + 0.01613 = 0.03226$) outranks a document appearing at Rank 1 in only one engine ($0.01639$). This naturally rewards multi-view agreement.
+
+### Quickstart Example
+```python
+from src.core.dataset import load_corpus_from_jsonl
+from src.retrieval.hybrid import HybridRetriever
+
+# 1. Load corpus
+corpus = load_corpus_from_jsonl("data/fixtures/corpus.jsonl")
+
+# 2. Instantiate hybrid retriever (combines BM25 and Dense with RRF k=60)
+hybrid_retriever = HybridRetriever(rrf_k=60)
+hybrid_retriever.index(corpus)
+
+# 3. Search
+results = hybrid_retriever.search("Reciprocal Rank Fusion hybrid retrieval pipelines", top_k=3)
+for candidate in results:
+    print(f"Rank {candidate.rank}: {candidate.document.doc_id} (RRF Score: {candidate.score:.6f})")
+
+# 4. Save and load complete hybrid index
+hybrid_retriever.save("indexes/hybrid")
+loaded_retriever = HybridRetriever.load("indexes/hybrid")
+```
+
+### Persistence Artifacts (`indexes/hybrid/`)
+- `sparse/`: Nested BM25 index artifacts (`vocab.index.json`, sparse matrices, `retriever_metadata.json`).
+- `dense/`: Nested FAISS index artifacts (`faiss.index`, `retriever_metadata.json`).
+- `hybrid_metadata.json`: Top-level configuration storing `rrf_k`, `sparse_weight`, `dense_weight`, and candidate depths.
 
 ---
 
-## 8. Running Tests
+## 8. Comparative 3-Way Retrieval Analysis: Sparse vs Dense vs Hybrid
 
-The test suite covers environment sanity, data contracts, dataset serialization, sparse BM25 retrieval, and dense FAISS retrieval:
+Empirical evaluation of the 6 fixture queries across the controlled 10-document corpus demonstrates how Hybrid RRF integrates the strengths of both engines:
+
+| Query ID | Informational Intent / Focus | Expected Target | BM25 Top 1 (Score) | Dense Top 1 (Cosine) | Hybrid RRF Top 1 (Score) | Architectural Insight & Consensus Analysis |
+| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| **`q_001`** | Exact formula for Reciprocal Rank Fusion | `doc_001` | **`doc_001`** (3.3278) | **`doc_001`** (0.7029) | **`doc_001`** (0.032787) | **Double Rank 1 Consensus**: Both retrievers place `doc_001` at Rank 1 ($1/61 + 1/61 = 0.032787$), cementing it at the top. |
+| **`q_002`** | Combining sparse & dense rankings via RRF | `doc_001`, `doc_002` | **`doc_002`** (4.3566) | **`doc_002`** (0.7632) | **`doc_002`** (0.032787) | Both target documents dominate the top 2: `doc_002` at Rank 1 ($0.032787$) and `doc_001` at Rank 2 ($0.032258$). |
+| **`q_003`** | BM25 hyperparameter $b$ length normalization | `doc_003` | **`doc_003`** (3.6160) | **`doc_003`** (0.6205) | **`doc_003`** (0.032787) | Both engines independently select `doc_003` as Rank 1; hybrid fusion yields the maximum possible single-candidate consensus score ($1/61 + 1/61 = 0.032787$), solidifying its Rank 1 position. |
+| **`q_004`** | CRAG action when evidence is incomplete | `doc_006` | **`doc_006`** (4.3962) | **`doc_006`** (0.6098) | **`doc_006`** (0.032787) | Full consensus across keyword and semantic match on CRAG policy passage `doc_006`. |
+| **`q_005`** | Shor's quantum algorithm breaking RSA *(Unanswerable)* | `[]` | `doc_009` (0.6334) | `doc_010` (0.2239) | `doc_009` (0.032018) | **Mathematical Rank Breakdown**: Sparse ranks `doc_009` at 1 (lexical overlap on 'algorithm', contribution $1/61 \approx 0.016393$). Because dense candidate depth ($K=20$) encompasses the small 10-document fixture corpus, `doc_009` also appears at Dense Rank 4 (cosine 0.1241, contribution $1/64 = 0.015625$). Their sum yields $\text{RRF}(doc\_009) = 1/61 + 1/64 = 0.032018$. This demonstrates that hybrid retrieval alone cannot reject unanswerable queries—it mechanically promotes candidate consensus regardless of semantic truth. This motivates the architectural requirement for Member 2's learned DeBERTa Evaluator to detect unanswerable inputs and trigger `REJECT_SEARCH`, though this fixture observation alone does not independently validate evaluator classification accuracy. |
+| **`q_006`** | CRAG query rewriting mechanism *(Hard Negative)* | `doc_006` | **`doc_006`** (4.4521) | **`doc_006`** (0.6517) | **`doc_006`** (0.032787) | Both engines agree on `doc_006` at 1 and `doc_007` at 2. Demonstrates topic overlap where sufficiency evaluation is required. |
+
+---
+
+## 9. Running Tests
+
+The automated test suite verifies all layers of the retrieval pipeline:
 
 ```bash
-# Run the complete test suite (56 tests)
+# Run the complete test suite (69 passing tests)
 pytest
 
 # Run fast unit tests
 pytest -m unit
 
-# Run sparse retrieval tests only
+# Run specific retrieval engine test suites
 pytest tests/test_sparse.py
-
-# Run dense retrieval tests only
 pytest tests/test_dense.py
+pytest tests/test_hybrid.py
 
 # Run with test coverage
 pytest --cov=src tests/
@@ -274,7 +330,7 @@ pytest --cov=src tests/
 
 ---
 
-## 9. Project Layout
+## 10. Project Layout
 
 ```text
 c:\RAG\
@@ -294,22 +350,25 @@ c:\RAG\
 │   └── synthetic/                <- Generated (Query, Doc, Label) datasets
 ├── indexes/
 │   ├── bm25/                     <- Saved BM25 index artifacts
-│   └── faiss/                    <- Saved FAISS vector index & ID mappings
+│   ├── faiss/                    <- Saved FAISS vector index & ID mappings
+│   └── hybrid/                   <- Nested sparse and dense indexes with RRF metadata
 ├── src/
 │   ├── core/                     <- Shared data contracts (Document, Labels, Dataset I/O)
-│   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BM25Retriever, DenseRetriever
+│   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BaseHybridRetriever,
+│   │                                BM25Retriever, DenseRetriever, HybridRetriever
 │   └── synthetic_data/           <- Negative generator, LLM judge, and validator
 └── tests/
     ├── test_environment.py       <- Environment and dependency import tests
     ├── test_schemas.py           <- Schema validation & label rule tests
     ├── test_dataset_io.py        <- Dataset I/O & fixture integrity tests
     ├── test_sparse.py            <- BM25 sparse retrieval tests
-    └── test_dense.py             <- Dense semantic retrieval & FAISS tests
+    ├── test_dense.py             <- Dense semantic retrieval & FAISS tests
+    └── test_hybrid.py            <- Reciprocal Rank Fusion hybrid retrieval tests
 ```
 
 ---
 
-## 10. Collaboration Guidelines (Members 1, 2, and 3)
+## 11. Collaboration Guidelines (Members 1, 2, and 3)
 
 1. **Branching Strategy**:
    - `main`: Protected, production-ready releases only.
