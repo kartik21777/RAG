@@ -4,6 +4,7 @@ Defines runtime evaluator predictions, candidate-level routing decisions,
 and query-level aggregation structures.
 """
 
+from enum import Enum
 import math
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
@@ -183,3 +184,38 @@ class RewriteResult(BaseModel):
         if self.strategy.startswith("terminal_"):
             return False
         return bool(self.rewritten_query and self.rewritten_query.strip())
+
+
+class GenerationStatus(str, Enum):
+    """
+    Status of the grounded response generation.
+    """
+    GROUNDED = "GROUNDED"                          # Factually supported by accepted evidence
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE" # Refused: evidence insufficient, empty, or contradictory
+    REJECTED_SEARCH = "REJECTED_SEARCH"             # Refused: search was rejected by CRAG routing
+    FAILED = "FAILED"                               # Pipeline or generation error
+
+
+class EvidenceCitation(BaseModel):
+    """
+    Traceable attribution link between generated claims and supporting evidence.
+    """
+    doc_id: str = Field(..., min_length=1, description="Stable identifier of the supporting document")
+    snippet: str = Field(..., min_length=1, description="Extracted sentence or passage supporting the claim")
+    source: Optional[str] = Field(None, description="Document source or title from metadata if available")
+    rank: Optional[int] = Field(None, ge=1, description="Retrieval rank of the supporting document")
+    score: Optional[float] = Field(None, description="Retrieval score of the supporting document")
+
+
+class GroundedResponse(BaseModel):
+    """
+    Grounded response emitted by the GroundedResponseGenerator (Milestone 6).
+    """
+    query: str = Field(..., min_length=1, description="Original user question")
+    final_query: str = Field(..., min_length=1, description="Effective query used for retrieval")
+    answer: str = Field(..., description="Generated answer text or safe refusal explanation")
+    status: GenerationStatus = Field(..., description="Status of the generation process")
+    citations: List[EvidenceCitation] = Field(default_factory=list, description="Traceable citations to accepted evidence")
+    action_used: CRAGAction = Field(..., description="CRAG action that directed this generation")
+    refusal_reason: Optional[str] = Field(None, description="Detailed reason when generation is declined or insufficient")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Audit, provenance, and diagnostic metadata")

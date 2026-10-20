@@ -472,20 +472,39 @@ The orchestration layer (`src/orchestration/`) coordinates runtime evaluator mod
 - **`OrchestratorResult`**: Dataclass capturing `original_query`, `final_query`, `final_action`, `final_results`, `query_decision`, `rewrite_history`, `refinement_result`, `rewrite_results`, and `metadata` for full observability.
 - **Optional Rewriter**: if `rewriter=None`, `REJECT_SEARCH` terminates immediately without attempting query reformulation.
 
+### 10.6 Grounded Response Generator (`BaseGroundedGenerator`, `DeterministicGroundedGenerator`)
+- **`BaseGroundedGenerator`**: Abstract generation contract defining `generate()` and `generate_from_result()`. Decoupled from the retrieval/orchestration pipeline.
+- **`DeterministicGroundedGenerator`**: Offline, CPU-compatible reference generator that produces factual responses supported by verbatim sentence-level citations (`EvidenceCitation`).
+- **Answerability Heuristic**:
+  - Overlap threshold (`min_overlap_terms`) and proportional coverage (requires at least 2 matching terms for multi-keyword queries).
+  - Causal Inquiry Guard: For questions querying causality ("why"), candidate sentences must contain causal markers (`because`, `due to`, `reason`, `caused by`, etc.); merely mentioning entity keywords is insufficient.
+  - Value Inquiry Guard: For questions asking for specific counts or quantities ("how many", "cost", "price", etc.), candidate sentences must contain numeric tokens.
+  - Failing these guards results in safe refusal with `GenerationStatus.INSUFFICIENT_EVIDENCE`.
+- **Action-Aware Safety**:
+  - `TRUST`: Synthesizes answer from trusted evidence documents and attaches verifiable citations pointing to actual `doc_id`s, ranks, and scores.
+  - `VERIFY_MORE`: Uses refined evidence documents and preserves refinement strategy provenance. If refined evidence is empty or non-answerable, refuses safely with `INSUFFICIENT_EVIDENCE`.
+  - `REJECT_SEARCH`: Strictly refuses factual generation from rejected candidates (`GenerationStatus.REJECTED_SEARCH`, zero citations).
+  - Empty or Irrelevant Evidence: Refuses safely with `GenerationStatus.INSUFFICIENT_EVIDENCE`.
+  - Intent-Dominance Override & Contradictions: The generator does NOT independently run an NLP semantic contradiction model. Upstream router signals (`is_contradictory_override`) represent policy overrides where a candidate had sufficient evidence density but failed intent fit (Intent Dominance Rule). When the overall action is `REJECT_SEARCH` and this signal is present, the generator refuses safely with an explicit intent-dominance explanation. In mixed-candidate scenarios where other candidates achieved `TRUST`, the independent evaluation rule is preserved: rejected candidates cannot invalidate accepted evidence or block answering.
+  - Malformed or Unusable Evidence: Emits `GenerationStatus.FAILED` with safe refusal metadata.
+- **`GroundedResponse`**: Dataclass returning `query`, `final_query`, `answer`, `status`, `citations`, `action_used`, `refusal_reason`, and `metadata`.
+
 ---
 
 ## 11. Running Tests
 
-The automated test suite verifies all layers of the retrieval pipeline, facade, synthetic data generation, runtime evaluation, and decision routing:
+The automated test suite verifies all layers of the retrieval pipeline, facade, synthetic data generation, runtime evaluation, decision routing, and grounded generation:
 
 ```bash
-# Run the complete test suite (181 passing tests)
+# Run the complete test suite (202 passing tests)
 pytest
 
 # Run fast unit tests
 pytest -m unit
+```
 
-# Run specific component test suites
+Individual test modules:
+```bash
 pytest tests/test_sparse.py
 pytest tests/test_dense.py
 pytest tests/test_hybrid.py
@@ -496,6 +515,7 @@ pytest tests/test_orchestration_router.py
 pytest tests/test_orchestration_refiner.py
 pytest tests/test_orchestration_rewriter.py
 pytest tests/test_orchestration_orchestrator.py
+pytest tests/test_orchestration_generator.py
 
 # Run with test coverage
 pytest --cov=src tests/
@@ -536,12 +556,13 @@ c:\RAG\
 ├── src/
 │   ├── core/                     <- Shared data contracts (Document, Labels, Dataset I/O)
 │   ├── orchestration/            <- Runtime evaluation, routing, refinement & rewriting (Option C)
-│   │   ├── schemas.py            <- EvaluatorPrediction, CandidateDecision, QueryDecision, RefinementResult, RewriteResult
+│   │   ├── schemas.py            <- EvaluatorPrediction, CandidateDecision, QueryDecision, RefinementResult, RewriteResult, GroundedResponse
 │   │   ├── evaluator.py          <- BaseRuntimeEvaluator & MockRuntimeEvaluator
 │   │   ├── router.py             <- CorrectiveDecisionRouter with intent dominance & aggregation
 │   │   ├── refiner.py            <- BaseEvidenceRefiner, MockEvidenceRefiner, SecondaryRetrievalRefiner
 │   │   ├── rewriter.py           <- BaseQueryRewriter, MockQueryRewriter, RuleBasedQueryRewriter
-│   │   └── orchestrator.py       <- CRAGOrchestrator (Milestone 5) & OrchestratorResult
+│   │   ├── orchestrator.py       <- CRAGOrchestrator (Milestone 5) & OrchestratorResult
+│   │   └── generator.py          <- BaseGroundedGenerator & DeterministicGroundedGenerator (Milestone 6)
 │   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BaseHybridRetriever,
 │   │                                BM25Retriever, DenseRetriever, HybridRetriever, CRAGRetrieverFacade
 │   └── synthetic_data/           <- Base contracts, Mock/LLM generators, LLMEvaluatorJudge,
@@ -559,7 +580,8 @@ c:\RAG\
     ├── test_orchestration_router.py    <- Corrective router & query aggregation tests (16 tests)
     ├── test_orchestration_refiner.py   <- Evidence refiner contract & secondary retrieval tests (15 tests)
     ├── test_orchestration_rewriter.py  <- Query rewriter, cycle prevention & budget tests (19 tests)
-    └── test_orchestration_orchestrator.py <- CRAG pipeline orchestrator integration tests (22 tests)
+    ├── test_orchestration_orchestrator.py <- CRAG pipeline orchestrator integration tests (22 tests)
+    └── test_orchestration_generator.py    <- Grounded response generator & citation tests (21 tests)
 ```
 
 ---
