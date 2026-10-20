@@ -308,21 +308,115 @@ Empirical evaluation of the 6 fixture queries across the controlled 10-document 
 
 ---
 
-## 9. Running Tests
+## 9. Synthetic Evaluator Training Data Generation (Stage 6)
 
-The automated test suite verifies all layers of the retrieval pipeline:
+To train Member 2's DeBERTa-v3 multi-task evaluator without relying on brittle manual annotations or leaking test sets, Member 1 provides an automated, provenance-tracked **Synthetic Training Data Pipeline**.
+
+### 9.1 Evaluation Task Formulation & Strategy Distribution
+
+The pipeline generates `(query, document, labels)` tuples across four explicit operational strategies:
+
+| Strategy Name | Intent Fit ($y_1$) | Evidence Sufficiency ($y_2$) | CRAG Corrective Action | Mining / Synthesis Logic |
+| :--- | :---: | :---: | :---: | :--- |
+| **`relevant_sufficient`** | `1` | `1` | **`TRUST`** | Generated from salient factual assertions within the target passage. The passage contains complete, unambiguous answers. |
+| **`relevant_insufficient`** | `1` | `0` | **`VERIFY-MORE`** | Focuses on partial concepts, edge cases, or preconditions mentioned in the passage where full context is deliberately missing. |
+| **`hard_negative_topic`** | `0` | `0` | **`REJECT-SEARCH`** | Mined via BM25 retrieval for lexical overlap or shared topic keywords from candidate passages that do *not* answer the question. |
+| **`random_negative`** | `0` | `0` | **`REJECT-SEARCH`** | Sampled uniformly at random from non-relevant corpus documents to establish a baseline discriminative floor. |
+
+> [!IMPORTANT]
+> **Strict Labeling Constraint**: As proven in Section 3, the combination `(intent_fit=0, evidence_sufficiency=1)` is **strictly prohibited**. A passage cannot be insufficient to address a query's intent yet simultaneously contain sufficient evidence to answer it. The pipeline's quality gates rigorously reject any candidate violating this constraint.
+
+### 9.2 Pipeline Architecture & Components
+
+```text
+                  [Curated Document Corpus]
+                             │
+            ┌────────────────┴────────────────┐
+            ▼                                 ▼
+   [Query Generation]              [Negative Mining Engine]
+   (Mock / LLM Generator)         (BM25 Lexical Hard Negatives)
+            │                                 │
+     (1,1) TRUST &                     (0,0) REJECT-SEARCH
+     (1,0) VERIFY-MORE                 Topical & Random Negatives
+            │                                 │
+            └────────────────┬────────────────┘
+                             ▼
+               [Evaluator Label Assignment]
+                 (Provenance & Metadata)
+                             ▼
+              [Strict Dataset Validation Gate]
+             • Schema adherence check
+             • Prohibition of (0,1) labels
+             • 0% duplicate IDs
+             • Class balance verification
+                             ▼
+            [evaluator_train.jsonl (Output)]
+```
+
+1. **Abstract Generator & Judge Contracts** (`src/synthetic_data/base.py`):
+   - `BaseSyntheticGenerator`: Abstract interface for query and variation synthesis (`generate_sufficient_query`, `generate_insufficient_query`).
+   - `BaseEvaluatorJudge`: Abstract interface for intent-fit and evidence-sufficiency assessment (`evaluate`).
+
+2. **Concrete LLM-as-a-Judge Implementation** (`src/synthetic_data/judge.py`):
+   - `LLMEvaluatorJudge`: Concrete judge implementing `BaseEvaluatorJudge` with prompt versioning (`JUDGE_PROMPT_VERSION = "v1.0"`), structured JSON parsing, prompt injection directives, and bounded retries.
+   - `MockEvaluatorJudge`: Deterministic rule-based judge for reproducible offline testing of judged pipeline mode.
+   - **Mandatory Hard-Negative Verification**: In judged mode, candidate negatives retrieved by BM25/Dense search are independently evaluated. If a candidate is determined to be relevant, it is not forced into `(0, 0)`; if the model evaluation fails or is ambiguous, it is routed to `pipeline.review_queue` and prevented from corrupting the training set.
+
+3. **Negative Mining Engine** (`src/synthetic_data/negative_sampler.py`):
+   - `sample_hard_negatives`: Uses BM25 or Dense retrievers to identify high-scoring false positives while strictly excluding positive document IDs (`exclude_doc_ids`).
+   - `sample_random_negatives`: Uniformly samples negatives with deterministic seeding across non-target corpus documents.
+
+4. **Generator Implementations** (`src/synthetic_data/generator.py`):
+   - `MockDeterministicGenerator`: Zero-cost, 100% reproducible offline generator using SHA-256 hash seeds and heuristic linguistic templates. Used in CI and unit testing.
+   - `LLMSyntheticGenerator`: Production-grade generator supporting structured OpenAI / Anthropic / Local LLM completions with JSON extraction and fallback guards.
+
+5. **Validation Quality Gates** (`src/synthetic_data/validator.py`):
+   - `validate_evaluator_dataset`: Audits generated datasets for Pydantic schema conformance, uniqueness of `example_id`, non-empty queries and documents, valid CRAG action mappings, and acceptable label class distributions.
+
+6. **End-to-End Orchestrator** (`src/synthetic_data/pipeline.py`):
+   - `SyntheticDataPipeline`: Coordinates query generation, negative candidate sampling with automatic fallback allocation for sparse corpora, sequential ID renumbering (`eval_syn_0001`, `eval_syn_0002`...), review queue management, and atomic JSONL persistence. Supports both deterministic construction mode (`judge=None`) and judged mode (`judge=LLMEvaluatorJudge(...)`).
+
+### 9.3 Command-Line Interface (CLI)
+
+Generate and validate synthetic datasets directly via the CLI:
 
 ```bash
-# Run the complete test suite (69 passing tests)
+# Mode 1: Deterministic construction mode (fast offline generation, zero LLM calls)
+python -m src.synthetic_data.generate \
+  --corpus-path data/fixtures/corpus.jsonl \
+  --output-path data/synthetic/evaluator_train.jsonl \
+  --judge none \
+  --seed 42
+
+# Mode 2: Offline judged mode (independent verification via MockEvaluatorJudge)
+python -m src.synthetic_data.generate \
+  --corpus-path data/fixtures/corpus.jsonl \
+  --output-path data/synthetic/evaluator_train.jsonl \
+  --judge mock \
+  --seed 42
+```
+
+> [!NOTE]
+> **Live LLM Judging Integration**: `LLMEvaluatorJudge` is intentionally provider-agnostic and accepts any completion callable (`llm_fn: Callable[[str], str]`). To run live judging against external providers (e.g. OpenAI or Anthropic), callers must supply a provider adapter wrapping their client and credentials (e.g. `LLMEvaluatorJudge(llm_fn=openai_adapter)`). The CLI does not bundle unpinned proprietary SDK dependencies or make network calls. Running `--judge llm` on the CLI directly signals that a provider adapter must be configured in code.
+
+---
+
+## 10. Running Tests
+
+The automated test suite verifies all layers of the retrieval pipeline and synthetic data generation:
+
+```bash
+# Run the complete test suite (94 passing tests)
 pytest
 
 # Run fast unit tests
 pytest -m unit
 
-# Run specific retrieval engine test suites
+# Run specific component test suites
 pytest tests/test_sparse.py
 pytest tests/test_dense.py
 pytest tests/test_hybrid.py
+pytest tests/test_synthetic_data.py
 
 # Run with test coverage
 pytest --cov=src tests/
@@ -330,7 +424,7 @@ pytest --cov=src tests/
 
 ---
 
-## 10. Project Layout
+## 11. Project Layout
 
 ```text
 c:\RAG\
@@ -347,7 +441,7 @@ c:\RAG\
 │   │   ├── corpus.jsonl          <- 10 curated test documents
 │   │   ├── queries.jsonl         <- 6 test queries with expected doc IDs and CRAG actions
 │   │   └── evaluator_labels.jsonl<- Ground-truth evaluator pairs with rationales
-│   └── synthetic/                <- Generated (Query, Doc, Label) datasets
+│   └── synthetic/                <- Generated (Query, Doc, Label) datasets (ignored in git)
 ├── indexes/
 │   ├── bm25/                     <- Saved BM25 index artifacts
 │   ├── faiss/                    <- Saved FAISS vector index & ID mappings
@@ -356,19 +450,21 @@ c:\RAG\
 │   ├── core/                     <- Shared data contracts (Document, Labels, Dataset I/O)
 │   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BaseHybridRetriever,
 │   │                                BM25Retriever, DenseRetriever, HybridRetriever
-│   └── synthetic_data/           <- Negative generator, LLM judge, and validator
+│   └── synthetic_data/           <- Base contracts, Mock/LLM generators, LLMEvaluatorJudge,
+│                                    MockEvaluatorJudge, NegativeSampler, Pipeline, Validator, CLI
 └── tests/
     ├── test_environment.py       <- Environment and dependency import tests
     ├── test_schemas.py           <- Schema validation & label rule tests
     ├── test_dataset_io.py        <- Dataset I/O & fixture integrity tests
     ├── test_sparse.py            <- BM25 sparse retrieval tests
     ├── test_dense.py             <- Dense semantic retrieval & FAISS tests
-    └── test_hybrid.py            <- Reciprocal Rank Fusion hybrid retrieval tests
+    ├── test_hybrid.py            <- Reciprocal Rank Fusion hybrid retrieval tests
+    └── test_synthetic_data.py    <- Synthetic generator, judge, sampler, validator & pipeline tests
 ```
 
 ---
 
-## 11. Collaboration Guidelines (Members 1, 2, and 3)
+## 12. Collaboration Guidelines (Members 1, 2, and 3)
 
 1. **Branching Strategy**:
    - `main`: Protected, production-ready releases only.
