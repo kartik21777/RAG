@@ -371,3 +371,43 @@ def test_rewrite_result_schema_validation():
             strategy="test",
             attempt_index=1,
         )
+
+
+@pytest.mark.unit
+def test_rewrite_result_is_usable_property():
+    """is_usable correctly distinguishes candidate rewrites from terminal cycle/budget failure states."""
+    valid_intermediate = RewriteResult(
+        original_query="orig",
+        rewritten_query="new",
+        strategy="synonym_expansion",
+        attempt_index=1,
+        is_terminal=False,
+    )
+    assert valid_intermediate.is_usable is True
+
+    valid_terminal = RewriteResult(
+        original_query="orig",
+        rewritten_query="final_candidate",
+        strategy="mock_mapped",
+        attempt_index=2,
+        is_terminal=True,
+    )
+    assert valid_terminal.is_usable is True
+
+    cycle_terminal = RewriteResult(
+        original_query="orig",
+        rewritten_query="orig",
+        strategy="terminal_cycle_avoided",
+        attempt_index=2,
+        is_terminal=True,
+    )
+    assert cycle_terminal.is_usable is False
+
+    budget_terminal = RewriteResult(
+        original_query="orig",
+        rewritten_query="orig",
+        strategy="terminal_budget_exhausted",
+        attempt_index=3,
+        is_terminal=True,
+    )
+    assert budget_terminal.is_usable is False

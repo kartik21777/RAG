@@ -178,7 +178,8 @@ C:\RAG\
 │   │   ├── evaluator.py                  <- BaseRuntimeEvaluator & MockRuntimeEvaluator
 │   │   ├── router.py                     <- CorrectiveDecisionRouter (intent dominance & query aggregation)
 │   │   ├── refiner.py                    <- BaseEvidenceRefiner & SecondaryRetrievalRefiner
-│   │   └── rewriter.py                   <- BaseQueryRewriter, MockQueryRewriter & RuleBasedQueryRewriter
+│   │   ├── rewriter.py                   <- BaseQueryRewriter, MockQueryRewriter & RuleBasedQueryRewriter
+│   │   └── orchestrator.py               <- CRAGOrchestrator (Milestone 5) & OrchestratorResult
 │   ├── retrieval/
 │   │   ├── facade.py                     <- CRAGRetrieverFacade & create_crag_retriever()
 │   │   ├── hybrid.py                     <- HybridRetriever (Reciprocal Rank Fusion)
@@ -188,5 +189,5 @@ C:\RAG\
 │       ├── judge.py                      <- LLMEvaluatorJudge & MockEvaluatorJudge
 │       ├── pipeline.py                   <- SyntheticDataPipeline
 │       └── validator.py                  <- Quality gate validator
-└── tests/                                <- 158 passing unit & integration tests
+└── tests/                                <- 181 passing unit & integration tests
 ```

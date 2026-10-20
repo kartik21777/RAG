@@ -173,3 +173,13 @@ class RewriteResult(BaseModel):
         default_factory=dict,
         description="Audit and diagnostic metadata",
     )
+
+    @property
+    def is_usable(self) -> bool:
+        """
+        True if the rewrite result produced a usable rewritten query candidate
+        rather than a terminal failure state (such as cycle avoidance or budget exhaustion).
+        """
+        if self.strategy.startswith("terminal_"):
+            return False
+        return bool(self.rewritten_query and self.rewritten_query.strip())

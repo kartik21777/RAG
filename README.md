@@ -459,6 +459,19 @@ The orchestration layer (`src/orchestration/`) coordinates runtime evaluator mod
   - `MockQueryRewriter`: Configurable deterministic test double supporting predefined mappings, sequential progressions, and cycle detection.
   - `RuleBasedQueryRewriter`: 3-stage heuristic rewriter (stage 1: question/filler stripping, stage 2: acronym & domain synonym expansion, stage 3: technical disambiguation context).
 
+### 10.5 CRAG Pipeline Orchestrator (`CRAGOrchestrator`)
+- **`CRAGOrchestrator`**: Assembles Evaluator, Router, Refiner, and Rewriter into a single `run_pipeline(query) -> OrchestratorResult` entry point.
+- **Corrective Feedback Loop**:
+  1. Retrieve top-K candidates via `CRAGRetrieverFacade`.
+  2. Evaluate each candidate via `BaseRuntimeEvaluator` and aggregate via `CorrectiveDecisionRouter`.
+  3a. `TRUST` → return trusted evidence immediately.
+  3b. `VERIFY_MORE` → invoke `BaseEvidenceRefiner`; return refined evidence.
+  3c. `REJECT_SEARCH` → invoke `BaseQueryRewriter` and loop back to step 1 (bounded by `max_rewrite_attempts`).
+- **Termination Guarantee**: rewrite loop is bounded by `max_rewrite_attempts` (default: 3) and `is_terminal` flags. A usable final rewrite (at `attempt_index == max_attempts`) is retrieved and evaluated; if still rejected, the pipeline terminates cleanly without triggering an unbudgeted extra rewrite call. Cycle-avoided or exhausted-budget terminal states terminate immediately without extra retrieval.
+- **`RewriteResult.is_usable`**: Helper property distinguishing productive query reformulations from terminal abort states (`terminal_cycle_avoided`, `terminal_budget_exhausted`).
+- **`OrchestratorResult`**: Dataclass capturing `original_query`, `final_query`, `final_action`, `final_results`, `query_decision`, `rewrite_history`, `refinement_result`, `rewrite_results`, and `metadata` for full observability.
+- **Optional Rewriter**: if `rewriter=None`, `REJECT_SEARCH` terminates immediately without attempting query reformulation.
+
 ---
 
 ## 11. Running Tests
@@ -466,7 +479,7 @@ The orchestration layer (`src/orchestration/`) coordinates runtime evaluator mod
 The automated test suite verifies all layers of the retrieval pipeline, facade, synthetic data generation, runtime evaluation, and decision routing:
 
 ```bash
-# Run the complete test suite (158 passing tests)
+# Run the complete test suite (181 passing tests)
 pytest
 
 # Run fast unit tests
@@ -482,6 +495,7 @@ pytest tests/test_orchestration_evaluator.py
 pytest tests/test_orchestration_router.py
 pytest tests/test_orchestration_refiner.py
 pytest tests/test_orchestration_rewriter.py
+pytest tests/test_orchestration_orchestrator.py
 
 # Run with test coverage
 pytest --cov=src tests/
@@ -526,7 +540,8 @@ c:\RAG\
 │   │   ├── evaluator.py          <- BaseRuntimeEvaluator & MockRuntimeEvaluator
 │   │   ├── router.py             <- CorrectiveDecisionRouter with intent dominance & aggregation
 │   │   ├── refiner.py            <- BaseEvidenceRefiner, MockEvidenceRefiner, SecondaryRetrievalRefiner
-│   │   └── rewriter.py           <- BaseQueryRewriter, MockQueryRewriter, RuleBasedQueryRewriter
+│   │   ├── rewriter.py           <- BaseQueryRewriter, MockQueryRewriter, RuleBasedQueryRewriter
+│   │   └── orchestrator.py       <- CRAGOrchestrator (Milestone 5) & OrchestratorResult
 │   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BaseHybridRetriever,
 │   │                                BM25Retriever, DenseRetriever, HybridRetriever, CRAGRetrieverFacade
 │   └── synthetic_data/           <- Base contracts, Mock/LLM generators, LLMEvaluatorJudge,
@@ -543,7 +558,8 @@ c:\RAG\
     ├── test_orchestration_evaluator.py <- Runtime evaluator contract & mock tests (11 tests)
     ├── test_orchestration_router.py    <- Corrective router & query aggregation tests (16 tests)
     ├── test_orchestration_refiner.py   <- Evidence refiner contract & secondary retrieval tests (15 tests)
-    └── test_orchestration_rewriter.py  <- Query rewriter, cycle prevention & budget tests (18 tests)
+    ├── test_orchestration_rewriter.py  <- Query rewriter, cycle prevention & budget tests (19 tests)
+    └── test_orchestration_orchestrator.py <- CRAG pipeline orchestrator integration tests (22 tests)
 ```
 
 ---
