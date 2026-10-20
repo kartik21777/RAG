@@ -142,7 +142,57 @@ Edit `.env` to configure paths and parameters. Placeholder values are safe for l
 
 ---
 
-## 5. Running Tests
+## 5. BM25 Sparse Retrieval Usage & Configuration
+
+The sparse retrieval module (`src/retrieval/sparse.py`) implements `BaseSparseRetriever` using `bm25s`:
+
+### Quickstart Example
+```python
+from src.core.dataset import load_corpus_from_jsonl
+from src.retrieval.sparse import BM25Retriever
+
+# 1. Load corpus
+corpus = load_corpus_from_jsonl("data/fixtures/corpus.jsonl")
+
+# 2. Instantiate and index
+retriever = BM25Retriever(k1=1.5, b=0.75, method="lucene")
+retriever.index(corpus)
+
+# 3. Search
+results = retriever.search("Reciprocal Rank Fusion formula", top_k=3)
+for candidate in results:
+    print(f"Rank {candidate.rank}: {candidate.document.doc_id} (Score: {candidate.score:.4f})")
+
+# 4. Save and load index
+retriever.save("indexes/bm25")
+loaded_retriever = BM25Retriever.load("indexes/bm25")
+```
+
+### BM25 Scoring Formulation & Saturation Analysis
+`bm25s` evaluates document relevance using the Lucene BM25 scoring formulation:
+
+$$\text{Score}(Q, D) = \sum_{t \in Q} \text{IDF}(t) \cdot \frac{\text{TF}(t, D) \cdot (k_1 + 1)}{\text{TF}(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+
+Where:
+- $\text{TF}(t, D)$ is the raw term frequency in document $D$.
+- $|D|$ and $\text{avgdl}$ represent the document length and average corpus document length.
+- $\text{IDF}(t) = \ln\left(1 + \frac{N - n(t) + 0.5}{n(t) + 0.5}\right)$ measures term rarity across corpus size $N$.
+- **Term-Frequency Saturation ($k_1$)**:
+  Notice the mathematical saturation behavior: while the unscaled ratio $\frac{\text{TF}}{\text{TF} + k_1 \cdot B}$ approaches $1$ as $\text{TF} \to \infty$, the complete BM25 term-frequency component with numerator $\text{TF} \cdot (k_1 + 1)$ approaches **$(k_1 + 1)$** for any fixed document:
+  $$\lim_{\text{TF}(t, D) \to \infty} \frac{\text{TF}(t, D) \cdot (k_1 + 1)}{\text{TF}(t, D) + k_1 \cdot B} = k_1 + 1$$
+  For our default $k_1 = 1.5$, an infinitely repeated query term can contribute at most **$2.5 \times \text{IDF}(t)$**. This mathematically bounds the influence of repeated words and prevents keyword stuffing.
+- **Document-Length Normalization ($b$)**:
+  $b \in [0.0, 1.0]$ (default: $0.75$) scales the document length penalty $B = (1 - b) + b \cdot \frac{|D|}{\text{avgdl}}$. When $b=1$, the score is fully penalized in proportion to document length; when $b=0$, length normalization is completely disabled.
+
+### Persistence Artifacts (`indexes/bm25/`)
+- `data.csc.index.npy`, `indices.csc.index.npy`, `indptr.csc.index.npy`: Compressed sparse matrix of token scores.
+- `vocab.index.json`: Vocabulary term-to-ID mapping.
+- `params.index.json`: BM25 hyperparameters.
+- `retriever_metadata.json`: Schema version, ordered document IDs, and full `Document` models for instant reconstruction.
+
+---
+
+## 6. Running Tests
 
 The test suite separates fast unit tests from model-loading integration tests:
 
@@ -159,7 +209,7 @@ pytest --cov=src tests/
 
 ---
 
-## 6. Project Layout
+## 7. Project Layout
 
 ```text
 c:\RAG\
@@ -178,16 +228,19 @@ c:\RAG\
 │   ├── bm25/                     <- Saved BM25 index artifacts
 │   └── faiss/                    <- Saved FAISS vector index & ID mappings
 ├── src/
-│   ├── core/                     <- Shared data contracts (Document, Labels)
-│   ├── retrieval/                <- BM25, FAISS, RRF, and HybridRetriever
+│   ├── core/                     <- Shared data contracts (Document, Labels, Dataset I/O)
+│   ├── retrieval/                <- BaseSparseRetriever, BM25Retriever, and future dense/RRF
 │   └── synthetic_data/           <- Negative generator, LLM judge, and validator
 └── tests/
-    └── test_environment.py       <- Stage 1 verification tests
+    ├── test_environment.py       <- Environment and dependency import tests
+    ├── test_schemas.py           <- Schema validation & label rule tests
+    ├── test_dataset_io.py        <- Dataset I/O & fixture integrity tests
+    └── test_sparse.py            <- BM25 sparse retrieval tests
 ```
 
 ---
 
-## 7. Collaboration Guidelines (Members 1, 2, and 3)
+## 8. Collaboration Guidelines (Members 1, 2, and 3)
 
 1. **Branching Strategy**:
    - `main`: Protected, production-ready releases only.
