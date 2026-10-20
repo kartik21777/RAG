@@ -1,0 +1,19 @@
+# Core CRAG Dependencies (Member 1 Foundation)
+# Verified compatible on Python 3.12 and 3.13 (Windows, macOS, Linux)
+
+# Data validation and configuration
+pydantic>=2.9.0,<3.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# Vector Embeddings & Dense Search
+torch>=2.2.0
+sentence-transformers>=3.0.0
+faiss-cpu>=1.9.0
+
+# Sparse Retrieval Engine (High-performance, pure-Python BM25 backend)
+bm25s>=0.3.0
+numpy>=1.25.0
+
+# Data interchange & serialization
+pyarrow>=15.0.0

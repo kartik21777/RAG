@@ -1,0 +1,11 @@
+# Development and Testing Dependencies
+# Inherits core dependencies
+-r requirements.txt
+
+# Testing framework & coverage
+pytest>=8.0.0
+pytest-cov>=5.0.0
+
+# Code quality & formatting
+ruff>=0.4.0
+mypy>=1.10.0

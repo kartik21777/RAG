@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crag-evaluator-retrieval"
+version = "0.1.0"
+description = "Semantic- and Evidence-Aware Corrective RAG: Member 1 Retrieval & Synthetic Data Pipeline"
+authors = [
+    { name = "CRAG Team Member 1", email = "member1@crag.local" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.9.0,<3.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "torch>=2.2.0",
+    "sentence-transformers>=3.0.0",
+    "faiss-cpu>=1.9.0",
+    "bm25s>=0.3.0",
+    "numpy>=1.25.0",
+    "pyarrow>=15.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+pyserini = [
+    "pyserini>=2.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "unit: Fast offline unit tests with no model loading",
+    "integration: Integration tests requiring vector models or indexes",
+    "slow: Tests with heavy computation or downloads",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

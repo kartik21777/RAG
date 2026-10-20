@@ -1,0 +1,48 @@
+# Python Bytecode and Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Environment Variables and Secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# Testing and Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project Data and Artifacts (Preserve fixtures, ignore raw large downloads and indexes)
+indexes/bm25/*
+!indexes/bm25/.gitkeep
+indexes/faiss/*
+!indexes/faiss/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/synthetic/*
+!data/synthetic/.gitkeep
+!data/fixtures/
+
+# Model Caches
+huggingface/
+.cache/
