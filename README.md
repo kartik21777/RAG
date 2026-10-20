@@ -416,12 +416,35 @@ python -m src.synthetic_data.generate \
 
 ---
 
-## 10. Running Tests
+## 10. CRAG Orchestration & Corrective Decision Routing (Option C)
 
-The automated test suite verifies all layers of the retrieval pipeline, facade, and synthetic data generation:
+The orchestration layer (`src/orchestration/`) coordinates runtime evaluator models, enforces policy constraints, and aggregates candidate evaluations into deterministic corrective actions:
+
+### 10.1 Runtime Evaluator Interface (`BaseRuntimeEvaluator`)
+- **`BaseRuntimeEvaluator`**: Abstract contract for inference-time evaluation via `evaluate_pair(query: str, doc: Document) -> EvaluatorPrediction`.
+- **`EvaluatorPrediction`**: Bounded decision scores:
+  - `intent_fit_score`: Continuous decision score in $[0.0, 1.0]$.
+  - `evidence_sufficiency_score`: Continuous decision score in $[0.0, 1.0]$.
+  - Decision scores represent continuous model activations (e.g., sigmoid outputs), **not calibrated probabilities of factual correctness**. Raw uncalibrated model logits are preserved in `metadata`.
+- **`MockRuntimeEvaluator`**: Deterministic offline mock supporting explicit pair overrides `(query, doc_id)`, document fallbacks, and deterministic defaults for CPU testing without GPU or API keys.
+
+### 10.2 Corrective Decision Router (`CorrectiveDecisionRouter`)
+- **Threshold Binarization**: Configurable decision thresholds $\tau_{\text{intent}}$ and $\tau_{\text{suff}}$ (defaults: `0.5`).
+- **Intent Dominance Rule**: A candidate with low intent fit ($< \tau_{\text{intent}}$) cannot provide trusted or verified evidence. The router unconditionally forces the corrective action to **`REJECT_SEARCH`** and sets `is_contradictory_override = True`, while strictly preserving the evaluator's original scores and independent `evidence_sufficiency_label` ($1$).
+- **Query-Level Aggregation (Section 8A)**:
+  - **Independent Candidate Evaluation**: Evaluates candidates independently—one poor or rejected candidate does not invalidate independent trusted evidence.
+  - **Strict Duplicate Rejection**: Rejects any repeated candidate document IDs within a single query aggregation (`ValueError`), distinguishing conflicting duplicate decisions from identical duplicate decisions.
+  - **Query Identity Validation**: Rejects candidate decisions whose query text does not match the target aggregation query.
+  - **Empty Retrieval Distinction**: Programmatically flags `empty_retrieval: bool` and prefixes rationales with `"EMPTY_RETRIEVAL:"` vs `"ALL_CANDIDATES_REJECTED:"`.
+
+---
+
+## 11. Running Tests
+
+The automated test suite verifies all layers of the retrieval pipeline, facade, synthetic data generation, runtime evaluation, and decision routing:
 
 ```bash
-# Run the complete test suite (98 passing tests)
+# Run the complete test suite (125 passing tests)
 pytest
 
 # Run fast unit tests
@@ -433,6 +456,8 @@ pytest tests/test_dense.py
 pytest tests/test_hybrid.py
 pytest tests/test_retrieval_facade.py
 pytest tests/test_synthetic_data.py
+pytest tests/test_orchestration_evaluator.py
+pytest tests/test_orchestration_router.py
 
 # Run with test coverage
 pytest --cov=src tests/
@@ -440,7 +465,7 @@ pytest --cov=src tests/
 
 ---
 
-## 11. Project Layout
+## 12. Project Layout
 
 ```text
 c:\RAG\
@@ -472,6 +497,10 @@ c:\RAG\
 │   └── generate_evaluator_datasets.py <- Generates development train/val datasets
 ├── src/
 │   ├── core/                     <- Shared data contracts (Document, Labels, Dataset I/O)
+│   ├── orchestration/            <- Runtime evaluation & corrective routing (Option C)
+│   │   ├── schemas.py            <- EvaluatorPrediction, CandidateDecision, QueryDecision
+│   │   ├── evaluator.py          <- BaseRuntimeEvaluator & MockRuntimeEvaluator
+│   │   └── router.py             <- CorrectiveDecisionRouter with intent dominance & aggregation
 │   ├── retrieval/                <- BaseSparseRetriever, BaseDenseRetriever, BaseHybridRetriever,
 │   │                                BM25Retriever, DenseRetriever, HybridRetriever, CRAGRetrieverFacade
 │   └── synthetic_data/           <- Base contracts, Mock/LLM generators, LLMEvaluatorJudge,
@@ -484,12 +513,14 @@ c:\RAG\
     ├── test_dense.py             <- Dense semantic retrieval & FAISS tests
     ├── test_hybrid.py            <- Reciprocal Rank Fusion hybrid retrieval tests
     ├── test_retrieval_facade.py  <- Unified CRAG retrieval facade tests
-    └── test_synthetic_data.py    <- Synthetic generator, judge, sampler, validator & pipeline tests
+    ├── test_synthetic_data.py    <- Synthetic generator, judge, sampler, validator & pipeline tests
+    ├── test_orchestration_evaluator.py <- Runtime evaluator contract & mock tests (11 tests)
+    └── test_orchestration_router.py    <- Corrective router & query aggregation tests (16 tests)
 ```
 
 ---
 
-## 12. Collaboration Guidelines (Members 1, 2, and 3)
+## 13. Collaboration Guidelines (Members 1, 2, and 3)
 
 1. **Branching Strategy**:
    - `main`: Protected, production-ready releases only.
