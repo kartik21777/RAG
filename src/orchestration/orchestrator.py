@@ -315,10 +315,33 @@ class CRAGOrchestrator:
                     existing_results=trusted_results if trusted_results else None,
                 )
 
+                # Step D: Re-evaluate refined evidence to determine whether expanded evidence achieves TRUST
+                if refinement.re_evaluation_action is not None:
+                    final_action = refinement.re_evaluation_action
+                elif refinement.refined_results:
+                    re_eval_decision = self._evaluate_and_route(
+                        current_query, refinement.refined_results
+                    )
+                    if re_eval_decision.overall_action == CRAGAction.TRUST:
+                        final_action = CRAGAction.TRUST
+                    elif hasattr(self.evaluator, "evaluate_collection"):
+                        coll_pred = self.evaluator.evaluate_collection(
+                            current_query, [r.document for r in refinement.refined_results]
+                        )
+                        coll_decision = self.router.route_candidate(coll_pred)
+                        if coll_decision.action == CRAGAction.TRUST:
+                            final_action = CRAGAction.TRUST
+                        else:
+                            final_action = CRAGAction.VERIFY_MORE
+                    else:
+                        final_action = CRAGAction.VERIFY_MORE
+                else:
+                    final_action = CRAGAction.VERIFY_MORE
+
                 return OrchestratorResult(
                     original_query=original_query,
                     final_query=current_query,
-                    final_action=CRAGAction.VERIFY_MORE,
+                    final_action=final_action,
                     final_results=refinement.refined_results,
                     query_decision=query_decision,
                     rewrite_history=rewrite_history,
@@ -330,6 +353,9 @@ class CRAGOrchestrator:
                         "refinement_strategy": refinement.refinement_strategy,
                         "is_expanded": refinement.is_expanded,
                         "verify_doc_ids": verify_ids,
+                        "targeted_query": refinement.targeted_query,
+                        "is_sufficient": refinement.is_sufficient,
+                        "re_evaluation_action": final_action.value,
                     },
                 )
 

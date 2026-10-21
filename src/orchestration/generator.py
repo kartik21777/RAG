@@ -277,6 +277,22 @@ class DeterministicGroundedGenerator(BaseGroundedGenerator):
                 metadata=meta,
             )
 
+        # Safety Gate: VERIFY_MORE with verified insufficient evidence -> Safe abstention
+        if action == CRAGAction.VERIFY_MORE and meta.get("is_sufficient") is False:
+            return GroundedResponse(
+                query=clean_query,
+                final_query=eff_query,
+                answer=(
+                    "I cannot provide a factual answer because the evidence remains "
+                    "insufficient after targeted verification."
+                ),
+                status=GenerationStatus.INSUFFICIENT_EVIDENCE,
+                citations=[],
+                action_used=action,
+                refusal_reason="Refinement completed without sufficient evidence.",
+                metadata=meta,
+            )
+
         # Safety Gate 2: REJECT_SEARCH -> Strictly decline factual generation
         if action == CRAGAction.REJECT_SEARCH:
             return GroundedResponse(

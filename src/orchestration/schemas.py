@@ -146,6 +146,18 @@ class RefinementResult(BaseModel):
         default_factory=list,
         description="Newly introduced RetrievalResult instances with their retrieval provenance",
     )
+    targeted_query: Optional[str] = Field(
+        default=None,
+        description="Targeted secondary query formulated for missing information",
+    )
+    is_sufficient: Optional[bool] = Field(
+        default=None,
+        description="Whether the expanded evidence set was assessed as sufficient",
+    )
+    re_evaluation_action: Optional[CRAGAction] = Field(
+        default=None,
+        description="Action determined after re-evaluating expanded evidence",
+    )
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Audit and diagnostic metadata",

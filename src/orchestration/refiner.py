@@ -14,11 +14,51 @@ Key Architectural Rules:
    from an attempted refinement that discovered no new candidates.
 """
 
+import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 from src.core.schemas import Document, RetrievalResult
-from src.orchestration.schemas import RefinementResult
+from src.orchestration.schemas import CRAGAction, RefinementResult
 from src.retrieval.facade import CRAGRetrieverFacade
+from src.orchestration.evaluator import BaseRuntimeEvaluator
+from src.orchestration.router import CorrectiveDecisionRouter
+
+REFINER_STOPWORDS: Set[str] = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of",
+    "with", "by", "from", "up", "about", "into", "over", "after", "is", "are",
+    "was", "were", "be", "been", "being", "have", "has", "had", "do", "does",
+    "did", "can", "could", "will", "would", "shall", "should", "may", "might",
+    "must", "what", "which", "who", "whom", "this", "that", "these", "those",
+    "am", "it", "its", "how", "why", "where", "when", "tell", "give", "me",
+}
+
+
+def extract_missing_information_query(
+    query: str,
+    partial_docs: List[Document],
+    query_generator: Optional[Callable[[str, List[Document]], Optional[str]]] = None,
+) -> str:
+    """
+    Synthesizes a concise, targeted secondary retrieval query seeking missing information.
+
+    Precedence:
+    1. Injected query_generator callable (e.g. LLM integration or dedicated query generator).
+       If it executes successfully and returns a non-empty string, that targeted query is used.
+    2. Bounded fallback: if query_generator is omitted, raises an exception, or returns
+       an empty/unusable string, falls back to the original query (the existing deeper retrieval
+       mechanism) preserving query intent without guessing.
+    """
+    clean_query = query.strip()
+    if query_generator is not None:
+        try:
+            generated = query_generator(clean_query, partial_docs)
+            if isinstance(generated, str) and generated.strip():
+                return generated.strip()
+        except Exception:
+            # Safe bounded fallback: do not crash on generator exception
+            pass
+
+    return clean_query
 
 
 def wrap_document_as_retrieval_result(
@@ -120,6 +160,7 @@ class BaseEvidenceRefiner(ABC):
 class MockEvidenceRefiner(BaseEvidenceRefiner):
     """
     Deterministic, configurable mock refiner for offline testing without index or API calls.
+    Supports targeted missing-information queries, re-evaluation, and adjacent/secondary expansion maps.
     """
 
     def __init__(
@@ -127,10 +168,20 @@ class MockEvidenceRefiner(BaseEvidenceRefiner):
         expansion_map: Optional[Dict[str, List[Union[RetrievalResult, Document]]]] = None,
         default_expansion: Optional[List[Union[RetrievalResult, Document]]] = None,
         strategy_name: str = "mock",
+        evaluator: Optional[BaseRuntimeEvaluator] = None,
+        router: Optional[CorrectiveDecisionRouter] = None,
+        query_generator: Optional[Callable[[str, List[Document]], Optional[str]]] = None,
+        targeted_expansion_map: Optional[Dict[str, List[Union[RetrievalResult, Document]]]] = None,
+        default_targeted_expansion: Optional[List[Union[RetrievalResult, Document]]] = None,
     ):
         self.expansion_map: Dict[str, List[Union[RetrievalResult, Document]]] = expansion_map or {}
         self.default_expansion: List[Union[RetrievalResult, Document]] = default_expansion or []
         self.strategy_name = strategy_name
+        self.evaluator = evaluator
+        self.router = router
+        self.query_generator = query_generator
+        self.targeted_expansion_map = targeted_expansion_map or {}
+        self.default_targeted_expansion = default_targeted_expansion or []
 
     def refine(
         self,
@@ -209,7 +260,64 @@ class MockEvidenceRefiner(BaseEvidenceRefiner):
                     seen_ids.add(d_id)
                     added_results.append(exp)
 
-        merged = initial_pool + added_results
+        adjacent_is_sufficient = False
+        targeted_query: Optional[str] = None
+        is_sufficient: Optional[bool] = None
+        re_eval_action: Optional[CRAGAction] = None
+        strategy_used = self.strategy_name
+
+        if self.evaluator is not None and self.router is not None:
+            current_pool = initial_pool + added_results
+            for cand in current_pool:
+                pred = self.evaluator.evaluate_pair(clean_query, cand.document)
+                dec = self.router.route_candidate(pred)
+                if dec.action == CRAGAction.TRUST:
+                    adjacent_is_sufficient = True
+                    break
+            if not adjacent_is_sufficient and hasattr(self.evaluator, "evaluate_collection"):
+                coll_pred = self.evaluator.evaluate_collection(clean_query, [c.document for c in current_pool])
+                coll_dec = self.router.route_candidate(coll_pred)
+                if coll_dec.action == CRAGAction.TRUST:
+                    adjacent_is_sufficient = True
+
+            # If still insufficient and targeted expansions are configured, execute targeted expansion
+            if not adjacent_is_sufficient and (self.targeted_expansion_map or self.default_targeted_expansion or self.query_generator):
+                current_docs = [r.document for r in (initial_pool + added_results)]
+                targeted_query = extract_missing_information_query(
+                    clean_query, current_docs, query_generator=self.query_generator
+                )
+                t_expansions = self.targeted_expansion_map.get(targeted_query, self.default_targeted_expansion)
+                norm_t_exp = self.normalize_results(t_expansions)
+                for exp in norm_t_exp:
+                    d_id = exp.document.doc_id
+                    if d_id not in seen_ids:
+                        seen_ids.add(d_id)
+                        pred = self.evaluator.evaluate_pair(clean_query, exp.document)
+                        cand_dec = self.router.route_candidate(pred)
+                        if cand_dec.action == CRAGAction.REJECT_SEARCH:
+                            continue
+                        added_results.append(exp)
+
+            # Re-evaluate final pool
+            merged = initial_pool + added_results
+            has_trusted = False
+            for cand in merged:
+                pred = self.evaluator.evaluate_pair(clean_query, cand.document)
+                dec = self.router.route_candidate(pred)
+                if dec.action == CRAGAction.TRUST:
+                    has_trusted = True
+                    break
+            if not has_trusted and hasattr(self.evaluator, "evaluate_collection"):
+                coll_pred = self.evaluator.evaluate_collection(clean_query, [c.document for c in merged])
+                coll_dec = self.router.route_candidate(coll_pred)
+                if coll_dec.action == CRAGAction.TRUST:
+                    has_trusted = True
+
+            is_sufficient = has_trusted
+            re_eval_action = CRAGAction.TRUST if has_trusted else CRAGAction.VERIFY_MORE
+        else:
+            merged = initial_pool + added_results
+
         added_ids = [r.document.doc_id for r in added_results]
 
         return RefinementResult(
@@ -217,13 +325,19 @@ class MockEvidenceRefiner(BaseEvidenceRefiner):
             original_doc_ids=target_ids,
             refined_results=merged,
             refined_documents=[r.document for r in merged],
-            refinement_strategy=self.strategy_name,
+            refinement_strategy=strategy_used,
             is_expanded=len(added_results) > 0,
             skipped=False,
             added_doc_ids=added_ids,
             added_results=added_results,
+            targeted_query=targeted_query,
+            is_sufficient=is_sufficient,
+            re_evaluation_action=re_eval_action,
             metadata={
                 "refiner_type": "MockEvidenceRefiner",
+                "targeted_query": targeted_query,
+                "is_sufficient": is_sufficient,
+                "re_evaluation_action": re_eval_action.value if re_eval_action else None,
                 "initial_count": len(initial_pool),
                 "added_count": len(added_results),
                 "final_count": len(merged),
@@ -234,7 +348,8 @@ class MockEvidenceRefiner(BaseEvidenceRefiner):
 class SecondaryRetrievalRefiner(BaseEvidenceRefiner):
     """
     Production-grade refiner that inspects chunk metadata for adjacent chunk links,
-    and falls back cleanly to secondary targeted hybrid retrieval when sequential links are absent.
+    and falls back cleanly to targeted secondary retrieval seeking missing information
+    when sequential links are absent or insufficient.
     """
 
     def __init__(
@@ -242,12 +357,18 @@ class SecondaryRetrievalRefiner(BaseEvidenceRefiner):
         retriever_facade: CRAGRetrieverFacade,
         corpus_lookup: Optional[Dict[str, Document]] = None,
         secondary_top_k: int = 3,
+        evaluator: Optional[BaseRuntimeEvaluator] = None,
+        router: Optional[CorrectiveDecisionRouter] = None,
+        query_generator: Optional[Callable[[str, List[Document]], Optional[str]]] = None,
     ):
         """
         Args:
             retriever_facade: Initialized and indexed CRAGRetrieverFacade instance.
             corpus_lookup: Optional mapping of doc_id -> Document for adjacent chunk retrieval.
             secondary_top_k: Number of candidates to retrieve during secondary search.
+            evaluator: Optional BaseRuntimeEvaluator for validating sufficiency of expanded evidence.
+            router: Optional CorrectiveDecisionRouter for evaluating candidate and collection actions.
+            query_generator: Optional callable synthesizing targeted queries seeking missing information.
         """
         if not isinstance(retriever_facade, CRAGRetrieverFacade):
             raise TypeError(f"retriever_facade must be CRAGRetrieverFacade, got {type(retriever_facade).__name__}")
@@ -261,9 +382,17 @@ class SecondaryRetrievalRefiner(BaseEvidenceRefiner):
         ):
             raise ValueError(f"secondary_top_k must be a positive integer, got {secondary_top_k}")
 
+        if evaluator is not None and not isinstance(evaluator, BaseRuntimeEvaluator):
+            raise TypeError(f"evaluator must be BaseRuntimeEvaluator, got {type(evaluator).__name__}")
+        if router is not None and not isinstance(router, CorrectiveDecisionRouter):
+            raise TypeError(f"router must be CorrectiveDecisionRouter, got {type(router).__name__}")
+
         self.retriever = retriever_facade
         self.corpus_lookup: Dict[str, Document] = corpus_lookup or {}
         self.secondary_top_k = secondary_top_k
+        self.evaluator = evaluator
+        self.router = router
+        self.query_generator = query_generator
 
     def refine(
         self,
@@ -341,16 +470,25 @@ class SecondaryRetrievalRefiner(BaseEvidenceRefiner):
 
         added_results: List[RetrievalResult] = []
         strategy_used = "none"
-
-        # 1. Attempt adjacent/parent chunk expansion if explicit metadata exists
         adjacent_added = False
+        targeted_query: Optional[str] = None
+        is_sufficient: Optional[bool] = None
+        re_eval_action: Optional[CRAGAction] = None
+
+        # Step A: Attempt adjacent/parent chunk expansion if explicit metadata exists
         for r in target_results:
             meta = r.document.metadata or {}
-            adjacent_ids = (
-                meta.get("adjacent_chunk_ids")
-                or [meta.get("prev_chunk_id"), meta.get("next_chunk_id")]
-            )
-            valid_adj_ids = [aid for aid in adjacent_ids if isinstance(aid, str) and aid in self.corpus_lookup]
+            adjacent_ids: List[str] = []
+            if "adjacent_chunk_ids" in meta and isinstance(meta["adjacent_chunk_ids"], list):
+                adjacent_ids.extend([aid for aid in meta["adjacent_chunk_ids"] if isinstance(aid, str)])
+            for field in ("prev_chunk_id", "next_chunk_id"):
+                val = meta.get(field)
+                if isinstance(val, str):
+                    adjacent_ids.append(val)
+                elif isinstance(val, list):
+                    adjacent_ids.extend([v for v in val if isinstance(v, str)])
+
+            valid_adj_ids = [aid for aid in adjacent_ids if aid in self.corpus_lookup]
             for aid in valid_adj_ids:
                 if aid not in seen_ids:
                     seen_ids.add(aid)
@@ -361,23 +499,77 @@ class SecondaryRetrievalRefiner(BaseEvidenceRefiner):
                     added_results.append(wrapped)
                     adjacent_added = True
 
+        # Check if adjacent chunks alone are sufficient
+        adjacent_is_sufficient = False
         if adjacent_added:
-            strategy_used = "adjacent_chunk"
-        else:
-            # 2. Fall back cleanly to secondary targeted hybrid retrieval
-            # Request sufficiently large depth (initial + secondary_top_k) to discover results beyond initial pool
-            fetch_depth = len(initial_pool) + self.secondary_top_k
-            retrieved = self.retriever.retrieve(clean_query, top_k=fetch_depth)
+            if self.evaluator is not None and self.router is not None:
+                current_pool = initial_pool + added_results
+                for cand in current_pool:
+                    pred = self.evaluator.evaluate_pair(clean_query, cand.document)
+                    dec = self.router.route_candidate(pred)
+                    if dec.action == CRAGAction.TRUST:
+                        adjacent_is_sufficient = True
+                        break
+                if not adjacent_is_sufficient and hasattr(self.evaluator, "evaluate_collection"):
+                    coll_pred = self.evaluator.evaluate_collection(clean_query, [c.document for c in current_pool])
+                    coll_dec = self.router.route_candidate(coll_pred)
+                    if coll_dec.action == CRAGAction.TRUST:
+                        adjacent_is_sufficient = True
 
+                if adjacent_is_sufficient:
+                    strategy_used = "adjacent_chunk"
+                    is_sufficient = True
+                    re_eval_action = CRAGAction.TRUST
+            else:
+                strategy_used = "adjacent_chunk"
+                adjacent_is_sufficient = True
+
+        # Step B & C: If adjacent chunks were unavailable OR resulting evidence remains insufficient
+        needs_secondary = (not adjacent_added) or (not adjacent_is_sufficient)
+        if needs_secondary:
+            current_docs = [r.document for r in (initial_pool + added_results)]
+            targeted_query = extract_missing_information_query(
+                clean_query, current_docs, query_generator=self.query_generator
+            )
+
+            fetch_depth = len(initial_pool) + len(added_results) + self.secondary_top_k
+            retrieved = self.retriever.retrieve(targeted_query, top_k=fetch_depth)
+
+            rejected_from_targeted: List[str] = []
             for res in retrieved:
                 d_id = res.document.doc_id
                 if d_id not in seen_ids:
                     seen_ids.add(d_id)
+                    # Step D: Re-evaluate newly retrieved candidate; do not trust irrelevant candidates
+                    if self.evaluator is not None and self.router is not None:
+                        pred = self.evaluator.evaluate_pair(clean_query, res.document)
+                        cand_dec = self.router.route_candidate(pred)
+                        if cand_dec.action == CRAGAction.REJECT_SEARCH:
+                            rejected_from_targeted.append(d_id)
+                            continue
                     added_results.append(res.model_copy(deep=True))
 
             strategy_used = "secondary_retrieval"
 
+        # Final re-evaluation of merged pool
         merged = initial_pool + added_results
+        if self.evaluator is not None and self.router is not None:
+            has_trusted = False
+            for cand in merged:
+                pred = self.evaluator.evaluate_pair(clean_query, cand.document)
+                dec = self.router.route_candidate(pred)
+                if dec.action == CRAGAction.TRUST:
+                    has_trusted = True
+                    break
+            if not has_trusted and hasattr(self.evaluator, "evaluate_collection"):
+                coll_pred = self.evaluator.evaluate_collection(clean_query, [c.document for c in merged])
+                coll_dec = self.router.route_candidate(coll_pred)
+                if coll_dec.action == CRAGAction.TRUST:
+                    has_trusted = True
+
+            is_sufficient = has_trusted
+            re_eval_action = CRAGAction.TRUST if has_trusted else CRAGAction.VERIFY_MORE
+
         added_ids = [r.document.doc_id for r in added_results]
 
         return RefinementResult(
@@ -390,12 +582,20 @@ class SecondaryRetrievalRefiner(BaseEvidenceRefiner):
             skipped=False,
             added_doc_ids=added_ids,
             added_results=added_results,
+            targeted_query=targeted_query,
+            is_sufficient=is_sufficient,
+            re_evaluation_action=re_eval_action,
             metadata={
                 "refiner_type": "SecondaryRetrievalRefiner",
                 "adjacent_metadata_found": adjacent_added,
-                "secondary_retrieval_executed": not adjacent_added,
+                "adjacent_is_sufficient": adjacent_is_sufficient if adjacent_added else False,
+                "secondary_retrieval_executed": needs_secondary,
+                "targeted_query": targeted_query,
+                "is_sufficient": is_sufficient,
+                "re_evaluation_action": re_eval_action.value if re_eval_action else None,
                 "initial_count": len(initial_pool),
                 "added_count": len(added_results),
                 "final_count": len(merged),
             },
         )
+

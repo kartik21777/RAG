@@ -13,7 +13,7 @@ Member 2 will implement `BaseRuntimeEvaluator` with their fine-tuned DeBERTa-v3 
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from src.core.schemas import Document
 from src.orchestration.schemas import EvaluatorPrediction
@@ -44,6 +44,39 @@ class BaseRuntimeEvaluator(ABC):
             TypeError: If doc is not a Document instance or query is not a string.
         """
         pass
+
+    def evaluate_collection(self, query: str, docs: List[Document]) -> EvaluatorPrediction:
+        """
+        Evaluates a collection of documents collectively for query intent and joint evidence sufficiency.
+        Default implementation combines non-empty document texts into a composite document candidate
+        and evaluates it via evaluate_pair.
+        """
+        if not isinstance(query, str):
+            raise TypeError(f"query must be str, got {type(query).__name__}")
+        q_clean = query.strip()
+        if not q_clean:
+            raise ValueError("query cannot be empty or whitespace only.")
+        if not isinstance(docs, list):
+            raise TypeError(f"docs must be a list of Document instances, got {type(docs).__name__}")
+
+        if not docs:
+            return EvaluatorPrediction(
+                query_text=q_clean,
+                doc_id="__empty_collection__",
+                intent_fit_score=0.0,
+                evidence_sufficiency_score=0.0,
+                rationale="Empty document collection evaluated.",
+                metadata={"evaluation_type": "collection", "doc_count": 0},
+            )
+
+        combined_text = "\n\n".join(d.text.strip() for d in docs if d.text and d.text.strip())
+        composite_id = "+".join(d.doc_id for d in docs)
+        composite_doc = Document(
+            doc_id=composite_id,
+            text=combined_text,
+            metadata={"is_composite": True, "source_doc_ids": [d.doc_id for d in docs]},
+        )
+        return self.evaluate_pair(q_clean, composite_doc)
 
 
 class MockRuntimeEvaluator(BaseRuntimeEvaluator):
